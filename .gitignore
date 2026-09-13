@@ -16,6 +16,12 @@ pc/esp32_voice_ai_env/
 # 配置文件 (含密钥)
 .env
 
+# 网络配置单一真相源（config.local.json.example 是入库模板）
+config.local.json
+
+# 由 scripts/gen_secrets.py 从 config.local.json 自动生成的 C 头文件
+firmware/esp32/src/secrets.local.h
+
 # IDE
 .vscode/
 .DS_Store

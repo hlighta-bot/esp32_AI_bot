@@ -9,14 +9,15 @@
 
 ## ESP32-S3
 
-负责：
+负责（Phase 1 已实现）：
 
 ```text
-I2S 麦克风采集
-VAD（静音检测，Phase 2）
-Wi-Fi 上行 / 下行
-音频接收 Buffer
-I2S 播放
+MAX9814 ADC 采集（50 kS/s → 16 kHz）
+Energy VAD（静音检测，能量阈值）
+Wi-Fi 上行（RECM / RPTF）
+音频接收 Buffer（PLAY + ACK）
+I2S 播放（MAX98357A → Speaker）
+USB Serial 回退链路
 ```
 
 目标期定位：设备的**唯一物理入口**，负责全部 Audio I/O 与网络 IO。
@@ -63,13 +64,13 @@ I2S 数字音频
 
 ---
 
-## 过渡期回退（当前代码状态）
+## 过渡期回退（保留，回退链路）
 
 ```text
 PC 麦克风 + PC USB Serial 发送 ──► ESP32 播放
 ```
 
-仅用于链路验证，不作为长期架构。
+Phase 1 完成后，Wi-Fi 主链路是主流程；USB Serial 保留作回退 / 烧录 / 日志。
 
 ---
 
@@ -111,35 +112,33 @@ AI Processing
 
 # 53. 后续升级路线
 
-## Phase 1 — 目标期主链路（近期）
+## Phase 1 — 目标期主链路（已完成 2026-09-09）
 
 ```text
-ESP32 I2S Mic
- ↓
-ESP32 VAD（可选，能量阈值即可）
- ↓
-Wi-Fi 上行
- ↓
-PC (Whisper + LLM + TTS)
- ↓
-Wi-Fi 下行
- ↓
-ESP32 I2S DAC
- ↓
-Speaker
+ESP32 MAX9814 ADC (GPIO1)
+  ↓
+Energy VAD（能量阈值，VAD_IDLE / VAD_SPEAK / VAD_END）
+  ↓
+Wi-Fi TCP 上行 (RECM + RPTF, port 8888)
+  ↓
+PC wifi_server.py (Whisper + LLM + Edge TTS)
+  ↓
+Wi-Fi TCP 下行 (PLAY + size + chunk + ACK)
+  ↓
+ESP32 I2S DAC → MAX98357A → Speaker
 ```
 
-关键动作：
+关键动作（均已实现）：
 
-* 固件接入 I2S 麦克风（ICS-43434 / INMP441）
-* 固件新增 Wi-Fi 客户端
-* PC 新增 `wifi_server.py` 接收上行音频
-* 补齐 [`transport_wifi.py`](../pc/transport_wifi.py) 的 ACK 与双向并发
-* 更新 [`protocol.md`](./protocol.md) 添加上行帧格式
+* 固件接入 MAX9814 模拟 MEMS（[`mic_adc.cpp`](../firmware/esp32/src/audio/mic_adc.cpp)，50 kS/s → 16 kHz 重采样 + 单极 LP + DC offset）
+* 固件 Wi-Fi 客户端（[`wifi_client.cpp`](../firmware/esp32/src/network/wifi_client.cpp)，TCP client + mDNS）
+* PC `wifi_server.py`（[`wifi_server.py`](../pc/wifi_server.py)，stdlib only，可迁移到 aidlux）
+* 协议扩展上行帧 RECM / RPTF（[`protocol.md`](./protocol.md#42-上行esp32--pc)）
+* ESP32 端 Energy VAD（[`energy_vad.cpp`](../firmware/esp32/src/vad/energy_vad.cpp)）
 
 目标：
 
-> **ESP32 麦克风 + Wi-Fi 双向语音闭环跑通。**
+> **ESP32 麦克风 + Wi-Fi 双向语音闭环跑通（Phase 1 完成）。**
 
 ---
 
@@ -272,15 +271,18 @@ PC 扬声器
 | 4  | Whisper ASR | 已完成（过渡期） |
 | 5  | LLM 对话 | 已完成（过渡期） |
 | 6  | 完整 Voice Chat（PC Mic + USB） | 已完成（过渡期） |
-| 7  | ESP32 I2S 麦克风 | 目标期 Phase 1 |
-| 8  | Wi-Fi Transport（ACK + 双向） | 目标期 Phase 1 |
-| 9  | PC wifi_server.py | 目标期 Phase 1 |
-| 10 | 协议扩展（上行帧） | 目标期 Phase 1 |
-| 11 | ESP32 端 VAD | Phase 2 |
-| 12 | Wake Word | Phase 3 |
-| 13 | TinyML | Phase 3 |
-| 14 | 电池供电 / 低功耗 | Phase 4 |
-| 15 | 独立 Voice AI | 最终目标 |
+| 7  | ESP32 MAX9814 ADC 麦克风 | 已完成（Phase 1，2026-09-09） |
+| 8  | Wi-Fi TCP Transport（双向 + ACK） | 已完成（Phase 1） |
+| 9  | PC `wifi_server.py`（stdlib only） | 已完成（Phase 1） |
+| 10 | 协议扩展（RECM / RPTF 上行帧） | 已完成（Phase 1） |
+| 11 | ESP32 端 Energy VAD（能量阈值） | 已完成（Phase 1，基础版） |
+| 12 | 更强 VAD（WebRTC / Silero） | Phase 2 |
+| 13 | 流式 TTS / 分块推送 | Phase 2 |
+| 14 | Wake Word | Phase 3 |
+| 15 | TinyML（Wake Word 模型） | Phase 3 |
+| 16 | 电池供电 / 低功耗 | Phase 4 |
+| 17 | 独立 Voice AI | 最终目标 |
+| 18 | aidlux 迁移（Server → Android slim Python） | 迁移预留（见 [`architecture.md`](./architecture.md#105-aidlux-迁移预留)） |
 
 ---
 
@@ -399,7 +401,7 @@ python voice_chat.py --transport wifi
 
 # 57. 一键检查清单
 
-第一次联调之前确认（目标期主线）：
+第一次联调之前确认（Phase 1 主链路）：
 
 ```text
 [ ] ESP32-S3 N16R8 已连接
@@ -407,29 +409,28 @@ python voice_chat.py --transport wifi
 [ ] PlatformIO 已安装
 [ ] pio device list 可以看到 ESP32
 [ ] firmware 可以编译
-[ ] firmware 可以烧录
-[ ] Serial = 921600（仅日志 / 回退）
-[ ] Wi-Fi 已配网（SSID + 密码）
-[ ] PC 与 ESP32 在同一 Wi-Fi 网段
-[ ] ESP32 I2S 播放 GPIO 已确认
-[ ] ESP32 I2S 麦克风（目标期新增）
+[ ] firmware 可以烧录（env:esp32-s3-n16r8-wifi）
+[ ] MAX9814 已接线：Out→GPIO1 / VDD→3V3 / GND→GND / GAIN 悬空 (+50 dB) / AR 悬空 (DC-coupled)
 [ ] MAX98357A 已接线
 [ ] Speaker 已连接
+[ ] Wi-Fi 已配网（config.local.json 中 wifi_ssid + wifi_pass）
+[ ] PC / aidlux 已配置静态 IP
+[ ] config.local.json 中 pc_host 指向该静态 IP
+[ ] PC 与 ESP32 在同一 Wi-Fi 网段
 [ ] PC Python 环境已创建
 [ ] requirements.txt 已安装
 [ ] ffmpeg 已安装
-[ ] Whisper.cpp 已配置
-[ ] Whisper 模型已配置
-[ ] .env 已配置
-[ ] GEMINI_API_KEY / SENSENOVA_API_KEY / OLLAMA_URL 已配置
-[ ] ESP32_VID / ESP32_PID 已配置
+[ ] Whisper.cpp 已配置 + 模型下载完成
+[ ] .env 已配置（GEMINI / SENSENOVA / OLLAMA）
+[ ] wifi_server.py 已启动：python wifi_server.py --port 8888
+[ ] ESP32 上电后串口日志显示已连 Wi-Fi + TCP 到 PC_HOST:8888
 ```
 
 ---
 
-# 58. 第一次完整联调
+# 58. 第一次完整联调（Phase 1 主链路）
 
-当前代码仍是过渡期路径，先按下面执行以验证链路；Wi-Fi 主链路补齐后再切换到 `--transport wifi`。
+当前代码已支持 Wi-Fi 主链路，按下面执行以验证端到端语音 AI 闭环。
 
 ### Step 1 — 硬件接线
 
@@ -441,20 +442,31 @@ ESP32-S3
    └── I2S ──► MAX98357A ──► Speaker
 ```
 
-### Step 2 — 编译固件
+### Step 2 — 编辑网络配置（`config.local.json`）
+
+```bash
+cd ~/projects/esp32-voice-ai
+cp config.local.json.example config.local.json
+# 用你喜欢的编辑器打开 config.local.json，填 5 个字段：
+#   wifi_ssid / wifi_pass / pc_host / pc_port / esp32_hostname
+```
+
+### Step 3 — 编译固件（Wi-Fi 版）
 
 ```bash
 cd ~/projects/esp32-voice-ai/firmware/esp32
-pio run
+pio run -e esp32-s3-n16r8-wifi
+# PIO pre-build 会自动跑 scripts/gen_secrets.py
+# 把 config.local.json 生成到 firmware/esp32/src/secrets.local.h
 ```
 
-### Step 3 — 烧录固件
+### Step 4 — 烧录固件
 
 ```bash
-pio run --target upload
+pio run -e esp32-s3-n16r8-wifi --target upload
 ```
 
-### Step 4 — 检查串口日志
+### Step 5 — 检查串口日志
 
 ```bash
 pio device monitor -b 921600
@@ -468,7 +480,7 @@ Ready
 
 后按 `Ctrl+C` 退出。
 
-### Step 5 — 准备 PC 环境
+### Step 6 — 准备 PC 环境
 
 ```bash
 cd ~/projects/esp32-voice-ai/pc
@@ -476,36 +488,40 @@ source esp32_voice_ai_env/bin/activate
 pip install -r requirements.txt
 ```
 
-### Step 6 — 启动语音 AI（过渡期路径）
+### Step 7 — 启动 Server 与 Voice Chat
+
+启动 Wi-Fi Server：
+
+```bash
+python wifi_server.py --port 8888 --engine gemini
+```
+
+（可选）本地回环验证走 USB 回退：
 
 ```bash
 python voice_chat.py --engine gemini
 ```
 
-Wi-Fi 主链路补齐后切换到：
-
-```bash
-python voice_chat.py --engine gemini --transport wifi
-```
-
 ### Step 7 — 观察链路
 
 ```text
-Recording...        (ESP32 I2S Mic 或 PC Mic 采集)
+ESP32 上电 → 连 Wi-Fi → TCP 到 PC_HOST:8888
       ↓
-Uploading via Wi-Fi (目标期) / Sending via USB (过渡期)
+麦克风采集（MAX9814 ADC，VAD_IDLE）
+      ↓
+VAD 触发（VAD_SPEAK）→ RECM chunk 上行
+      ↓
+静音 → VAD_END → RPTF
       ↓
 Transcribing...
       ↓
 LLM Responding...
       ↓
-TTS
+TTS (Edge TTS → WAV)
       ↓
-Sending...
+PLAY + size + chunk + ACK (Wi-Fi 下行)
       ↓
-ESP32
-      ↓
-I2S
+ESP32 I2S → MAX98357A
       ↓
 🔊 Speaker
 ```
@@ -540,14 +556,16 @@ I2S 输出 → MAX98357A → 扬声器
 
 ## 59.2 目标期完成标准（Phase 1）
 
-如果可以做到：
+Phase 1 完成后，应该能连续做到：
 
 ```text
 用户说话
    ↓
-ESP32 I2S 麦克风采集
+ESP32 MAX9814 ADC 采集 → Energy VAD 触发（VAD_SPEAK）
    ↓
-Wi-Fi 上行到 PC
+Wi-Fi TCP 上行 RECM chunk（port 8888）
+   ↓
+静音后发 RPTF → wifi_server 触发 pipeline
    ↓
 Whisper 识别
    ↓
@@ -555,37 +573,45 @@ LLM 回答
    ↓
 Edge TTS 合成
    ↓
-Wi-Fi 下行到 ESP32
+Wi-Fi TCP 下行 PLAY + size + chunk + ACK
    ↓
 I2S 输出 → MAX98357A → 扬声器
 ```
 
-则说明：**ESP32 麦克风 + Wi-Fi 双向主链路完成**，可脱离 PC 麦克风与 USB 运行。
+则说明：**ESP32 麦克风 + Wi-Fi 双向主链路完成**，可脱离 PC 麦克风与 USB 运行。当前代码已达标（2026-09-09）。
+
+## 59.3 aidlux 迁移预留
+
+未来将 Server 迁移到安卓 aidlux 时，只需满足：
+
+* `wifi_server.py` 只依赖 Python 标准库（已满足）
+* 无 `asyncio`（已满足）
+* 无第三方框架 / `pydantic-settings` / `.env` 依赖（配置走 [`config.py`](../pc/config.py) 常量）
+* 阻塞 I/O + 线程池即可工作（`AudioServer` / `ClientSession` 已按此设计）
+* ASR / TTS 用设备端二进制（`whisper.cpp` 或本地 TTS 推理）
 
 ---
 
 # 60. 项目下一步
 
-过渡期完成后，按优先级推进：
+Phase 1 主链路已跑通，按优先级推进：
 
 ```text
-① ESP32 I2S 麦克风接入
+① 稳定调参：Energy VAD 阈值、chunk size、TCP 超时（Phase 2）
       ↓
-② Wi-Fi Transport（ACK + 双向并发）
+② 更强 VAD：WebRTC / Silero（Phase 2）
       ↓
-③ PC wifi_server.py 接收上行音频
+③ 流式 TTS：分块 PLAY，压低首字延迟（Phase 2）
       ↓
-④ protocol.md 扩展上行帧
+④ Wake Word：始终监听但不上传（Phase 3）
       ↓
-⑤ ESP32 端 VAD
+⑤ TinyML：WakeNet / 自训练关键词模型（Phase 3）
       ↓
-⑥ Wake Word
+⑥ aidlux 迁移：Server 迁到安卓 slim Python（迁移预留）
       ↓
-⑦ TinyML
+⑦ 电池供电 / 低功耗（Phase 4）
       ↓
-⑧ 电池供电 / 低功耗
-      ↓
-⑨ 独立设备
+⑧ 独立设备
 ```
 
 最终形态：

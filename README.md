@@ -22,18 +22,39 @@
 
 ## 快速开始
 
-一次性走完最小验证路径（首次运行前请确保 ESP32 已通过 USB 连上 PC）：
+### 路径 A：Wi-Fi 主链路（Phase 1 已完成，推荐）
 
 ```bash
-# 1. 编译并烧录固件（只需第一次跑）
+# 1. 配置 Wi-Fi（只需一次，配置单一真相源：config.local.json）
+cd ~/projects/esp32-voice-ai
+cp config.local.json.example config.local.json
+# 编辑 config.local.json：wifi_ssid / wifi_pass / pc_host / pc_port / esp32_hostname
+# 编辑完无需手动跑 gen_secrets.py；pio run 会自动调用
+
+# 2. 编译并烧录 Wi-Fi 版固件
+cd ~/projects/esp32-voice-ai/firmware/esp32
+pio run -e esp32-s3-n16r8-wifi
+pio run -e esp32-s3-n16r8-wifi --target upload
+
+# 3. 启动 Wi-Fi Server
+cd ~/projects/esp32-voice-ai/pc
+source ~/projects/esp32-voice-ai/pc/esp32_voice_ai_env/bin/activate
+pip install -r requirements.txt      # 首次跑需要
+python wifi_server.py --port 8888 --engine sensenova
+```
+
+ESP32 上电后自动连 Wi-Fi → TCP 到 `PC_HOST:8888`；对着麦克风说话，VAD 触发 → RECM 上行 → Whisper → LLM → Edge TTS → PLAY 下行 → 扬声器播出。
+
+### 路径 B：USB Serial 回退（打字模式，验证链路 / 无 Wi-Fi）
+
+```bash
+# 1. 编译并烧录串口版固件
 cd ~/projects/esp32-voice-ai/firmware/esp32
 pio run
 pio run --target upload
 
-# 2. 启动语音 AI（在 pc 目录下）
+# 2. 启动语音 AI（打字输入）
 cd ~/projects/esp32-voice-ai/pc
-source esp32_voice_ai_env/bin/activate
-pip install -r requirements.txt      # 首次跑需要
 python voice_chat.py --engine sensenova
 ```
 
@@ -87,6 +108,7 @@ SYSTEM_PROMPT="只用一句话回答。" python voice_chat.py --engine sensenova
 | [`docs/hardware.md`](./docs/hardware.md) | ESP32、MAX98357A、I2S 接线、音频格式、串口协议、ACK 机制 |
 | [`docs/wiring.md`](./docs/wiring.md) | ESP32 ↔ MAX98357A 物理接线表 |
 | [`docs/protocol.md`](./docs/protocol.md) | PC ↔ ESP32 二进制通信协议详解 |
+| [`docs/network-config.md`](./docs/network-config.md) | 网络配置与配对方案（mDNS / NVS / Web UI / SoftAP、反向发现、aidlux 迁移） |
 | [`docs/firmware.md`](./docs/firmware.md) | PlatformIO、编译烧录、串口监视、Python 环境、系统依赖 |
 | [`docs/build.md`](./docs/build.md) | 完整启动流程（Step 1-10）、最简启动命令 |
 | [`docs/test.md`](./docs/test.md) | Test 1-6 分步验证 |
@@ -133,7 +155,7 @@ esp32-voice-ai/
 │   ├── send_wav.py
 │   ├── text_to_speak.py
 │   │
-│   ├── wifi_server.py        # 目标期：接收 ESP32 上行音频（待实现）
+│   ├── wifi_server.py        # Wi-Fi 主链路 Server（stdlib only，可迁移 aidlux）
 │   ├── mic.py                # 过渡期回退：PC 麦克风
 │   ├── asr.py
 │   ├── llm.py
@@ -155,14 +177,15 @@ esp32-voice-ai/
 | 项 | 值 |
 |----|----|
 | ESP32 板子 | ESP32-S3 N16R8 |
+| 麦克风 | MAX9814 模拟 MEMS（GPIO1 = ADC1_CH0，50 kS/s → 16 kHz） |
 | I2S 播放 GPIO | BCLK=16, LRCLK=17, DIN=15 |
-| I2S 麦克风 GPIO | 目标期新增（如 ICS-43434 / INMP441） |
 | 采样率 | 16000 Hz |
 | 位深 / 声道 | 16-bit / Mono |
 | 分块大小 | 4096 字节 |
 | 功放 | MAX98357A |
-| 网络 | Wi-Fi（TCP 优先，UDP 备选；端口待定） |
+| 网络 | Wi-Fi TCP，端口 8888（mDNS: `esp32-voice.local`） |
 | 串口波特率 | 921600（仅用于烧录 / 日志 / 回退） |
+| VAD | 能量阈值（`VadState`：IDLE / SPEAK / END） |
 
 ---
 
@@ -192,16 +215,16 @@ DEFAULT_LLM_ENGINE=sensenova
 ```text
 [ ] ESP32-S3 N16R8 已连接（USB 用于烧录 / 日志）
 [ ] PlatformIO 已安装，`pio device list` 可见 ESP32
-[ ] firmware 编译、烧录成功
-[ ] Serial = 921600（日志 / 回退通道）
-[ ] Wi-Fi 已配网，ESP32 与 PC 同一网段（目标期）
-[ ] I2S 播放 GPIO 与固件一致
-[ ] I2S 麦克风已接线（目标期）
+[ ] Wi-Fi 版固件编译烧录成功（env:esp32-s3-n16r8-wifi）
+[ ] config.local.json 已配置（wifi_ssid / wifi_pass / pc_host / pc_port / esp32_hostname）
+[ ] PC / aidlux 静态 IP 已配置并与 ESP32 同网段
+[ ] MAX9814 已接线：GND→GND / VDD→3V3 / Out→GPIO1 / GAIN 悬空 (+50 dB) / AR 悬空 (DC-coupled)
 [ ] MAX98357A + Speaker 已接线并共地
 [ ] PC Python 环境已创建，`requirements.txt` 已安装
 [ ] ffmpeg 已安装
 [ ] Whisper.cpp + 模型已配置
 [ ] `.env` 已配置（含 API Key）
+[ ] wifi_server.py 已启动，日志显示 listening on 0.0.0.0:8888
 ```
 
 完整清单与分步联调见 [`docs/roadmap.md`](./docs/roadmap.md)。
@@ -210,18 +233,24 @@ DEFAULT_LLM_ENGINE=sensenova
 
 ## 完成标准
 
-### 过渡期（当前代码，打字输入模式）
+### 主链路（Phase 1，已完成 2026-09-09）
 
 ```text
-键盘输入 → LLM → Edge TTS → USB Serial → ESP32 → I2S → 扬声器
+ESP32 MAX9814 ADC (GPIO1)
+  → Energy VAD → Wi-Fi RECM/RPTF 上行
+  → PC wifi_server.py (Whisper + LLM + Edge TTS)
+  → Wi-Fi PLAY + ACK 下行
+  → ESP32 I2S → MAX98357A → 扬声器
 ```
 
-（加 `--voice-input` 可切换为「PC 麦克风 → Whisper → LLM → Edge TTS → USB Serial → ESP32 → I2S → 扬声器」）
+Server 只用 Python 标准库、无 asyncio、阻塞 I/O，可直接迁移到安卓 aidlux（见 [`docs/architecture.md`](./docs/architecture.md) §10.5）。
 
-### 目标期（Phase 1）
+### 回退（USB Serial）
 
 ```text
-ESP32 I2S 麦克风 → Wi-Fi → PC (Whisper + LLM + TTS) → Wi-Fi → ESP32 → I2S → 扬声器
+键盘输入 / PC 麦克风 → LLM → Edge TTS → USB Serial → ESP32 → I2S → 扬声器
 ```
 
-达成目标期闭环即为项目当前阶段完成。后续路线见 [`docs/roadmap.md`](./docs/roadmap.md)。
+保留用于链路验证与烧录日志，不作为长期架构。
+
+后续路线见 [`docs/roadmap.md`](./docs/roadmap.md)。

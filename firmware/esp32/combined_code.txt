@@ -1,0 +1,663 @@
+============================================================
+FILE: src/audio/mic_adc.h
+============================================================
+
+// ============================================================
+// mic_adc.h - MAX9814 模拟 MEMS 麦克风 → ESP32-S3 ADC
+// ============================================================
+//
+// MAX9814 输出模拟电压（静态 ~VDD/2），走 ESP32-S3 ADC1。
+//
+// 当前 PlatformIO 使用：
+//   Arduino-ESP32 2.0.x / ESP-IDF 4.4
+//
+// 因此使用传统 ADC API：
+//   adc1_config_width()
+//   adc1_config_channel_atten()
+//   adc1_get_raw()
+//
+// 关键处理链：
+//   1. ADC 约 50 kS/s，12-bit unsigned
+//   2. 去直流偏置（减去 2048）
+//   3. 一阶低通
+//   4. 50 kHz → 16 kHz 重采样
+//   5. 软件增益
+//   6. Ring Buffer
+//
+// 输出：
+//   int16 mono PCM
+//   16000 Hz
+// ============================================================
+
+#ifndef MIC_ADC_H
+#define MIC_ADC_H
+
+#include <Arduino.h>
+#include <driver/adc.h>
+
+// ============================================================
+// 采样率
+// ============================================================
+
+#define MIC_ADC_SAMPLE_HZ     50000
+#define MIC_TARGET_SAMPLE_HZ  16000
+
+// ============================================================
+// ADC 硬件参数
+// ============================================================
+
+#define MIC_ADC_UNIT          ADC_UNIT_1
+#define MIC_ADC_WIDTH_BITS    12
+
+#define MIC_ADC_MID_VALUE     2048
+#define MIC_ADC_MAX_VALUE     4095
+
+// ============================================================
+// Ring Buffer
+// ============================================================
+
+// 原始采样缓冲预留
+#define MIC_RAW_RING_SAMPLES  256
+
+// 输出 PCM Ring Buffer
+#define MIC_OUT_RING_SAMPLES  128
+
+// ============================================================
+// 增益与滤波
+// ============================================================
+
+// << 1 = ×2
+#define MIC_GAIN_SHIFT        1
+
+// 一阶低通滤波器，Q13
+//
+// y = α*x + (8192-α)*y_prev
+//
+// 6554 / 8192 ≈ 0.8
+#define MIC_LP_ALPHA_FIXED    6554
+
+// ============================================================
+// poll 时序
+// ============================================================
+
+// 每 2 ms 读取一批 ADC
+#define MIC_POLL_US           2000
+
+
+class MicAdc {
+public:
+
+    // 构造函数
+    MicAdc();
+
+    // 初始化 ADC1
+    //
+    // ESP32-S3:
+    //   GPIO1  → ADC1_CH0
+    //   GPIO2  → ADC1_CH1
+    //   ...
+    //   GPIO10 → ADC1_CH9
+    void begin(int gpio);
+
+    // 主循环调用
+    void poll();
+
+    // 是否存在已经处理好的 PCM 样本
+    bool available() const;
+
+    // 批量读取 PCM
+    size_t read(int16_t *buf, size_t max_samples);
+
+    // 最近一次 ADC 去偏置后的值
+    int16_t lastRaw() const
+    {
+        return _lastRaw;
+    }
+
+private:
+
+    // 读取一批 ADC 原始数据
+    void readRawBatch();
+
+    // ========================================================
+    // ADC
+    // ========================================================
+
+    // ESP32 Arduino 2.x 使用 adc1_channel_t
+    adc1_channel_t _chan;         // ADC channel（0..8），与 gpio 对应
+    // ========================================================
+    // 输出 Ring Buffer
+    // ========================================================
+
+    int16_t _outRing[MIC_OUT_RING_SAMPLES];
+
+    // 下一次写入位置
+    size_t _outHead;
+
+    // 最旧数据 / 下一次读取位置
+    size_t _outTail;
+
+    // 当前有效样本数量
+    size_t _outCount;
+
+    // ========================================================
+    // 重采样
+    // ========================================================
+
+    uint32_t _phaseAcc;
+
+    // 一阶低通状态
+    int32_t _lpState;
+
+    // 最近一次去偏置后的 ADC 值
+    int16_t _lastRaw;
+
+    // ========================================================
+    // poll 时序
+    // ========================================================
+
+    uint32_t _lastPollUs;
+
+    // 是否初始化成功
+    bool _started;
+
+    // 使用的 GPIO
+    int _gpio;
+};
+
+#endif  // MIC_ADC_H
+
+
+
+============================================================
+FILE: src/audio/mic_adc.cpp
+============================================================
+
+// ============================================================
+// mic_adc.cpp - MAX9814 ADC 采集实现
+// ============================================================
+//
+// ADC API：
+//   ESP32 Arduino 2.x / ESP-IDF 4.4
+//
+// 使用：
+//   adc1_get_raw()
+//
+// 处理链：
+//   ADC → 去偏置 → 低通 → 50kHz→16kHz → 增益 → Ring Buffer
+// ============================================================
+
+#include "mic_adc.h"
+
+
+MicAdc::MicAdc()
+    : _chan(ADC1_CHANNEL_0)
+    , _outHead(0)
+    , _outTail(0)
+    , _outCount(0)
+    , _phaseAcc(0)
+    , _lpState(0)
+    , _lastRaw(0)
+    , _lastPollUs(0)
+    , _started(false)
+    , _gpio(-1)
+{
+}
+
+
+void MicAdc::begin(int gpio)
+{
+    if (_started) {
+        return;
+    }
+
+    // ========================================================
+    // GPIO → ADC1 channel
+    //
+    // GPIO1  → CH0
+    // GPIO2  → CH1
+    // ...
+    // GPIO10 → CH9
+    // ========================================================
+
+    if (gpio < 1 || gpio > 10) {
+        Serial.printf(
+            "[mic] invalid gpio %d for ADC1 (need 1..10)\n",
+            gpio
+        );
+        return;
+    }
+
+    _chan = static_cast<adc1_channel_t>(gpio - 1);
+
+    // ========================================================
+    // ADC1 配置
+    // ========================================================
+
+    if (adc1_config_width(ADC_WIDTH_BIT_12) != ESP_OK) {
+        Serial.println("[mic] adc1_config_width failed");
+        return;
+    }
+
+    // ESP32-S3 ADC 衰减
+    if (adc1_config_channel_atten(
+            _chan,
+            ADC_ATTEN_DB_12) != ESP_OK) {
+
+        Serial.println(
+            "[mic] adc1_config_channel_atten failed"
+        );
+        return;
+    }
+
+    _gpio = gpio;
+    _lastPollUs = micros();
+    _started = true;
+
+    Serial.printf(
+        "[mic] ready, gpio=%d chan=%d\n",
+        gpio,
+        static_cast<int>(_chan)
+    );
+}
+
+
+void MicAdc::readRawBatch()
+{
+    // ========================================================
+    // 50 kHz → 16 kHz
+    //
+    // phaseStep =
+    //   65536 × 16000 / 50000
+    //   ≈ 20971
+    // ========================================================
+
+    const uint32_t phaseStep = 20971;
+
+    // ========================================================
+    // 一阶低通
+    // Q13
+    // ========================================================
+
+    const int32_t alpha = MIC_LP_ALPHA_FIXED;
+    const int32_t oneMinus = 8192 - alpha;
+
+    // ========================================================
+    // 每批 100 个 ADC 样本
+    //
+    // 100 / 50000 = 2 ms
+    // ========================================================
+
+    for (int i = 0; i < 100; i++) {
+
+        int raw = adc1_get_raw(_chan);
+
+        if (raw < 0) {
+            raw = 0;
+        }
+
+        if (raw > MIC_ADC_MAX_VALUE) {
+            raw = MIC_ADC_MAX_VALUE;
+        }
+
+        // ----------------------------------------------------
+        // 去 DC 偏置
+        // ----------------------------------------------------
+
+        _lastRaw =
+            static_cast<int16_t>(
+                raw - MIC_ADC_MID_VALUE
+            );
+
+        // ----------------------------------------------------
+        // 一阶低通
+        // ----------------------------------------------------
+
+        int32_t acc =
+            static_cast<int32_t>(_lastRaw) * alpha +
+            _lpState * oneMinus;
+
+        _lpState = acc >> 13;
+
+        if (_lpState > 32767) {
+            _lpState = 32767;
+        }
+
+        if (_lpState < -32768) {
+            _lpState = -32768;
+        }
+
+        // ----------------------------------------------------
+        // 50kHz → 16kHz
+        // ----------------------------------------------------
+
+        _phaseAcc += phaseStep;
+
+        if (_phaseAcc >= 0x10000) {
+
+            _phaseAcc -= 0x10000;
+
+            // ------------------------------------------------
+            // 软件增益
+            // ------------------------------------------------
+
+            int32_t amplified =
+                _lpState << MIC_GAIN_SHIFT;
+
+            if (amplified > 32767) {
+                amplified = 32767;
+            }
+
+            if (amplified < -32768) {
+                amplified = -32768;
+            }
+
+            const int16_t sample =
+                static_cast<int16_t>(amplified);
+
+            // ------------------------------------------------
+            // Ring Buffer 写入
+            // ------------------------------------------------
+
+            _outRing[_outHead] = sample;
+
+            _outHead++;
+
+            if (_outHead >= MIC_OUT_RING_SAMPLES) {
+                _outHead = 0;
+            }
+
+            if (_outCount < MIC_OUT_RING_SAMPLES) {
+
+                // 缓冲区还没满
+                _outCount++;
+
+            } else {
+
+                // 缓冲区已满：
+                // 新数据覆盖最旧数据
+                _outTail++;
+
+                if (_outTail >= MIC_OUT_RING_SAMPLES) {
+                    _outTail = 0;
+                }
+            }
+        }
+    }
+}
+
+
+void MicAdc::poll()
+{
+    if (!_started) {
+        return;
+    }
+
+    const uint32_t now = micros();
+
+    if (now - _lastPollUs < MIC_POLL_US) {
+        return;
+    }
+
+    _lastPollUs = now;
+
+    readRawBatch();
+}
+
+
+bool MicAdc::available() const
+{
+    return _outCount > 0;
+}
+
+
+size_t MicAdc::read(
+    int16_t *buf,
+    size_t max_samples)
+{
+    if (buf == nullptr ||
+        max_samples == 0 ||
+        _outCount == 0) {
+
+        return 0;
+    }
+
+    size_t take =
+        (_outCount < max_samples)
+            ? _outCount
+            : max_samples;
+
+    // --------------------------------------------------------
+    // 从最旧数据开始读取
+    // --------------------------------------------------------
+
+    size_t tail = _outTail;
+
+    size_t space =
+        MIC_OUT_RING_SAMPLES - tail;
+
+    size_t first =
+        (take < space)
+            ? take
+            : space;
+
+    memcpy(
+        buf,
+        &_outRing[tail],
+        first * sizeof(int16_t)
+    );
+
+    // --------------------------------------------------------
+    // 如果跨越 Ring 尾部
+    // --------------------------------------------------------
+
+    if (take > first) {
+
+        const size_t rest =
+            take - first;
+
+        memcpy(
+            buf + first,
+            &_outRing[0],
+            rest * sizeof(int16_t)
+        );
+    }
+
+    // --------------------------------------------------------
+    // 更新读指针
+    // --------------------------------------------------------
+
+    tail += take;
+
+    if (tail >= MIC_OUT_RING_SAMPLES) {
+        tail -= MIC_OUT_RING_SAMPLES;
+    }
+
+    _outTail = tail;
+
+    _outCount -= take;
+
+    return take;
+}
+
+============================================================
+FILE: src/audio/mic_uploader.cpp
+============================================================
+
+// ============================================================
+// mic_uploader.cpp - 上行录音发送实现
+// ============================================================
+//
+// 帧结构：
+//   RECM: [magic 4B][flags 2B][chunk_size 4B][pcm <=4096B]
+//   RPTF: [magic 4B][total_size 4B]
+//
+// 与下行复用同一 TCP 连接。发送期间不做下行读取（Phase 1 简化），
+// Phase 3 加双向并发 / TCP_NODELAY 已在 wifi_client 里配置。
+// ============================================================
+
+#include "mic_uploader.h"
+#include "protocol/frame.h"
+
+MicUploader::MicUploader()
+    : _wifi(nullptr)
+    , _mic(nullptr)
+    , _vad(nullptr)
+    , _sessionBytes(0)
+    , _firstInSession(true)
+    , _lastSendMs(0)
+{
+}
+
+void MicUploader::begin(WifiClient *wifi, MicAdc *mic, EnergyVad *vad)
+{
+    _wifi = wifi;
+    _mic  = mic;
+    _vad  = vad;
+}
+
+bool MicUploader::sendRecChunk(const int16_t *samples, size_t n, uint16_t flags)
+{
+    // 目标 REC_CHUNK_BYTES 字节；不足直接发送实际大小
+    size_t chunkBytes = n * sizeof(int16_t);
+    if (chunkBytes > REC_CHUNK_BYTES) {
+        chunkBytes = REC_CHUNK_BYTES;
+        n = chunkBytes / 2;
+    }
+
+    uint8_t header[10];
+    memcpy(header, PROTO_REC, 4);
+    packU16(header + 4, flags);
+    packU32(header + 6, (uint32_t)chunkBytes);
+
+    if (_wifi->write(header, 10) != 10) return false;
+    if (_wifi->write((const uint8_t *)samples, chunkBytes) != (int)chunkBytes) return false;
+    _wifi->flush();
+    return true;
+}
+
+void MicUploader::sendReport(uint32_t totalBytes)
+{
+    uint8_t header[8];
+    memcpy(header, PROTO_RPTF, 4);
+    packU32(header + 4, totalBytes);
+    _wifi->write(header, 8);
+    _wifi->flush();
+}
+
+void MicUploader::run()
+{
+    if (!_wifi || !_mic || !_vad) return;
+    if (!_wifi->isConnected()) return;
+
+    _mic->poll();
+
+    if (!_mic->available()) return;
+
+    static int16_t samples[512];
+    size_t n = _mic->read(samples, sizeof(samples) / sizeof(samples[0]));
+    if (n == 0) return;
+
+    _vad->update(samples, n, MIC_TARGET_SAMPLE_HZ);
+
+    VadState st = _vad->state();
+
+    switch (st) {
+        case VAD_IDLE:
+            // 静默，不发送
+            _firstInSession = true;
+            _sessionBytes = 0;
+            break;
+
+        case VAD_SPEAK: {
+            uint32_t now = millis();
+            if (now - _lastSendMs < REC_CHUNK_INTERVAL_MS) {
+                return;
+            }
+            _lastSendMs = now;
+
+            uint16_t flags = 0;
+            if (_firstInSession) {
+                flags |= REC_FLAG_FIRST | REC_FLAG_VAD_TRIGGER;
+                _firstInSession = false;
+            }
+
+            if (sendRecChunk(samples, n, flags)) {
+                _sessionBytes += n * sizeof(int16_t);
+            }
+            break;
+        }
+
+        case VAD_END:
+            sendReport(_sessionBytes);
+            _sessionBytes = 0;
+            _firstInSession = true;
+            Serial.printf("[mic] session end, total=%u B\n", _sessionBytes);
+            break;
+    }
+}
+
+
+============================================================
+FILE: src/audio/mic_uploader.h
+============================================================
+
+// ============================================================
+// mic_uploader.h - ESP32 → PC/aidlux 上行录音分块发送
+// ============================================================
+//
+// 协议（与 pc/config.py 对齐）：
+//   RECM | u16 flags       | u32 chunk_size | pcm (<=4096)
+//   RPTF | u32 total_size
+//
+// 状态机：
+//   IDLE → (vad.trigger) → REC → (vad.end) → REPORT → IDLE
+//
+// 用法：
+//   MicUploader up;
+//   up.begin(&wifi, &mic, &vad);
+//   while (true) {
+//       up.run();  // 每 loop 调一次
+//       delay(1);
+//   }
+// ============================================================
+
+#ifndef MIC_UPLOADER_H
+#define MIC_UPLOADER_H
+
+#include "network/wifi_client.h"
+#include "audio/mic_adc.h"
+#include "vad/energy_vad.h"
+
+// 每次向上发一个 chunk 的目标大小（字节）
+#define REC_CHUNK_BYTES       4096
+// 目标：每 100 ms 发一个 chunk
+//  16000 * 2 * 0.1 = 3200 字节；取 4096 保守上限
+#define REC_CHUNK_INTERVAL_MS 100
+
+class MicUploader {
+public:
+    MicUploader();
+    void begin(WifiClient *wifi, MicAdc *mic, EnergyVad *vad);
+
+    void run();   // 主循环调用
+
+    // 调试：本段累计字节数
+    uint32_t sessionBytes() const { return _sessionBytes; }
+
+private:
+    bool sendRecChunk(const int16_t *samples, size_t n, uint16_t flags);
+    void sendReport(uint32_t totalBytes);
+
+    WifiClient * _wifi;
+    MicAdc     * _mic;
+    EnergyVad  * _vad;
+
+    uint32_t    _sessionBytes;
+    bool        _firstInSession;
+    uint32_t    _lastSendMs;
+};
+
+#endif  // MIC_UPLOADER_H
+
+

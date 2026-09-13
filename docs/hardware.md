@@ -100,78 +100,63 @@ firmware/esp32/src/main.cpp
 
 # 24. 麦克风
 
-第一阶段：
+Phase 1 已把录音下沉到 ESP32：
 
 ```text
-麦克风
+MAX9814 (analog MEMS)
  ↓
-PC
+ESP32 ADC1 GPIO1
  ↓
-sounddevice
+mic_adc.cpp（去直流偏置 + 相位累加器 50k→16k + 一阶 LP + 增益 ×2）
+ ↓
+EnergyVad（RMS 阈值 + 静音超时）
+ ↓
+MicUploader（RECM 分块 + RPTF 段末）
+ ↓
+Wi-Fi / TCP :8888
+ ↓
+PC 或 aidlux wifi_server.py
 ```
 
-ESP32 不负责录音。
-
-后续可以增加 ESP32 麦克风。
-
-例如：
-
-```text
-ESP32-S3
-   │
-   ├── I2S MIC
-   │
-   ▼
-PCM
-   │
-   ▼
-Wi-Fi
-   │
-   ▼
-PC / Server
-```
+详见 [`wiring.md §3`](./wiring.md)（GPIO1 接线表）与
+[`firmware/esp32/src/audio/mic_adc.cpp`](../firmware/esp32/src/audio/mic_adc.cpp)。
 
 ---
 
 # 25. 关于 MAX9814
 
-如果后续使用 MAX9814：
+MAX9814 是**模拟** MEMS 麦克风，输出模拟电压（静态 ~VDD/2），
+走 ESP32-S3 的 ADC1 通道。当前 Phase 1 使用它作为默认麦克风。
+
+我们使用的模块是 5 引脚 breakout 板（`GND / VDD / Out / GAIN / AR`），
+丝印规格：`G=VDD → +60dB / 悬空 → +50dB / G=GND → +40dB`；
+`Out` 走 `AR` 控制 DC 偏置：`AR=LOW → 1.25V offset`，`AR=HIGH → AC-coupled ≈0V`。
+
+接线（详见 [`wiring.md`](./wiring.md)）：
 
 ```text
-MAX9814
- ↓
-Analog Audio
- ↓
-ESP32 ADC
+MAX9814  GND  ──► ESP32-S3  GND
+MAX9814  VDD  ──► ESP32-S3  3V3   (旁边加 100nF 到 GND)
+MAX9814  Out  ──► ESP32-S3  GPIO1  (ADC1_CH0)
+MAX9814  GAIN ──► 悬空     (+50 dB，默认推荐)
+MAX9814  AR   ──► 悬空     (DC-coupled，输出带 VDD/2 偏置)
 ```
 
-例如：
+> 切勿把 `AR` 接到 VDD。接 VDD 会切到 AC-coupled，直流偏置≈0，
+> 但 [`mic_adc.cpp`](../firmware/esp32/src/audio/mic_adc.cpp) 仍按 `-MIC_ADC_MID_VALUE`
+> 去直流 → 会削掉正半周期。若日后切 AC-coupled，需同步改固件。
 
-```text
-MAX9814 OUT
-     │
-     ▼
-ESP32 ADC GPIO
-```
+固件预处理链（`mic_adc.cpp`）：
 
-但对于 ESP32-S3 语音 AI，长期方案更推荐：
+1. ADC 内部采样率 ~50 kS/s、12-bit unsigned
+2. 去直流偏置（`- 2048`）→ 有符号 int16
+3. 相位累加器精确重采样：50 kHz → 16 kHz
+4. 一阶低通抗混叠（α = 6554 Q13，fc ≈ 7 kHz）
+5. 软件增益 `<< MIC_GAIN_SHIFT`（默认 ×2）
 
-```text
-数字 I2S 麦克风
-```
-
-例如 I2S MEMS 麦克风。
-
-原因是数字麦克风可以避免：
-
-```text
-ADC
-模拟噪声
-增益控制
-电源噪声
-```
-
-等问题。
+> 后续如果追求更低噪声 / 更好信噪比，可切换到 I2S 数字麦克风
+> （如 ICS-43434、INMP441、SPH0655），此时 `mic_adc.cpp` 可替换成
+> 独立的 `i2s_mic.cpp`，`MicUploader` / `EnergyVad` 上层无需改动。
 
 ---
 

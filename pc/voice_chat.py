@@ -234,8 +234,10 @@ def main():
         args = [a for a in args if a != "--voice-input"]
 
     # 初始化传输层
+    #   --transport wifi   → 连 config.ESP32_WIFI_IP（或环境变量 ESP32_IP）
+    #   --transport serial → 使用默认串口（/dev/ttyACM0，可后续从 --port 覆盖）
     if transport_type == "wifi":
-        transport = WifiTransport(ip="192.168.1.100") # 需根据实际情况修改IP
+        transport = WifiTransport(ip=config.ESP32_WIFI_IP, port=config.WIFI_TCP_PORT)
     else:
         # 使用默认串口，通常是 /dev/ttyUSB0 或 COMx
         transport = SerialTransport(port="/dev/ttyACM0")
