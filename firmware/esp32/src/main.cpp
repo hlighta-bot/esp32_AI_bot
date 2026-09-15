@@ -6,6 +6,8 @@
 #include "audio/mic_adc.h"
 #include "audio/mic_uploader.h"
 #include "vad/energy_vad.h"
+#include "config/device_config.h"
+#include "web/config_web.h"
 #endif
 
 #include "protocol/frame.h"
@@ -20,6 +22,18 @@
 // MAX9814 麦克风 GPIO
 // GPIO1 = ADC1_CH0
 #define MIC_GPIO              1
+
+
+// ========================================================
+// Config Mode 入口：BOOT 键 (GPIO0)
+//
+// 仅作为运行中进入配置界面的入口：
+// Normal Mode 下长按 3 秒 → Config Mode。
+// 不重置任何 NVS 配置。
+// ========================================================
+
+#define CONFIG_MODE_BUTTON_GPIO      0
+#define CONFIG_MODE_BUTTON_HOLD_MS   3000
 
 
 // ============================================================
@@ -103,6 +117,9 @@ static WifiClient   g_wifi;
 static MicAdc       g_mic;
 static EnergyVad    g_vad;
 static MicUploader  g_uploader;
+static DeviceConfig g_config;
+static ConfigWeb    g_web;
+static bool         g_inConfigMode = false;
 
 #endif
 
@@ -522,46 +539,87 @@ void setup()
 #ifdef FIRMWARE_MODE_WIFI
 
     // ========================================================
-    // Wi-Fi + TCP
+    // DeviceConfig (NVS / defaults)
     // ========================================================
 
-    g_wifi.begin();
+    g_config.begin();
+
+    // BOOT 键 (GPIO0) 作为 Config Mode 入口：
+    // Normal Mode 下长按 3 秒进入配置界面（不重置任何配置）
+    pinMode(CONFIG_MODE_BUTTON_GPIO, INPUT_PULLUP);
+
+    if (!g_config.isConfigValid())
+    {
+        g_inConfigMode = true;
+        g_web.begin(g_config);
+
+        Serial.println(
+            "Configuration mode enabled (SoftAP + captive portal)."
+        );
+    }
+    else
+    {
+        const RuntimeConfig& cfg =
+            g_config.getConfig();
+
+        // ========================================================
+        // Wi-Fi + TCP
+        // ========================================================
+
+        g_wifi.begin(
+            cfg.wifi_ssid,
+            cfg.wifi_pass,
+            cfg.pc_host,
+            cfg.pc_port
+        );
 
 
-    // ========================================================
-    // MAX9814 ADC
-    // ========================================================
+        // ========================================================
+        // MAX9814 ADC
+        // ========================================================
 
-    g_mic.begin(
-        MIC_GPIO
-    );
-
-
-    // ========================================================
-    // VAD
-    // ========================================================
-
-    g_vad.begin(
-        VAD_RMS_THRESHOLD,
-        VAD_MIN_VOICE_MS,
-        VAD_SILENCE_MS
-    );
+        g_mic.begin(
+            MIC_GPIO
+        );
 
 
-    // ========================================================
-    // MicUploader
-    // ========================================================
+        // ========================================================
+        // VAD (from RuntimeConfig)
+        // ========================================================
 
-    g_uploader.begin(
-        &g_wifi,
-        &g_mic,
-        &g_vad
-    );
+        g_vad.begin(
+            cfg.vad_rms,
+            cfg.vad_min_ms,
+            cfg.vad_sil_ms
+        );
 
 
-    Serial.println(
-        "Wi-Fi mode enabled (TCP client + ADC mic)."
-    );
+        // ========================================================
+        // MicUploader
+        // ========================================================
+
+        g_uploader.begin(
+            &g_wifi,
+            &g_mic,
+            &g_vad
+        );
+
+
+        // ========================================================
+        // Normal Mode 下启动 HTTP 配置入口（STA 模式）
+        //
+        // 仅启动 WebServer，不切换 Wi-Fi 模式，不启动 SoftAP/DNS。
+        // 用户可通过 http://esp32-voice-ai.local 访问配置页面。
+        // 访问页面不影响 TCP/Mic/VAD 语音链路。
+        // ========================================================
+
+        g_web.beginHTTP(g_config);
+
+
+        Serial.println(
+            "Wi-Fi mode enabled (TCP client + ADC mic)."
+        );
+    }
 
 #endif
 
@@ -611,6 +669,48 @@ void setup()
 
 
 // ============================================================
+// checkConfigModeButton
+//
+// BOOT 键 (GPIO0) 长按检测：
+//   按下 = LOW（INPUT_PULLUP，松开 = HIGH）
+//   持续 LOW >= 3000 ms 触发
+//   松开之前不重复触发，松开后清除计时
+//   非阻塞，不 delay()
+// ============================================================
+
+#ifdef FIRMWARE_MODE_WIFI
+
+bool checkConfigModeButton()
+{
+    static uint32_t pressStartMs = 0;
+
+    if (digitalRead(CONFIG_MODE_BUTTON_GPIO) == LOW)
+    {
+        // 按下：记录起始时刻（首次按下）
+        if (pressStartMs == 0)
+        {
+            pressStartMs = millis();
+        }
+        // 持续按下达到阈值 → 触发（只触发一次）
+        else if (millis() - pressStartMs >= CONFIG_MODE_BUTTON_HOLD_MS)
+        {
+            pressStartMs = 0;
+            return true;
+        }
+    }
+    else
+    {
+        // 松开：清除计时，天然去抖
+        pressStartMs = 0;
+    }
+
+    return false;
+}
+
+#endif
+
+
+// ============================================================
 // loop
 // ============================================================
 
@@ -619,11 +719,53 @@ void loop()
 
 #ifdef FIRMWARE_MODE_WIFI
 
+    // Normal Mode 下检测 BOOT 长按 → 进入 Config Mode
+    // if (!g_inConfigMode && checkConfigModeButton())
+    if (false && !g_inConfigMode && checkConfigModeButton())
+    {
+        Serial.println(
+            "[config] BOOT long-press: entering config mode"
+        );
+
+        // 1. 断开 TCP
+        g_wifi.disconnect();
+
+        // 2. 断开 STA Wi-Fi（ConfigWeb::begin 会切到 AP 模式）
+        WiFi.disconnect();
+
+        // 3. 清理 Normal Mode 已启动的 HTTP Server（避免路由/socket 残留）
+        g_web.stop();
+
+        // 4. 启动 SoftAP + DNS + Web（运行时重新初始化）
+        g_web.begin(g_config);
+
+        // 4. 切换 loop() 分支
+        g_inConfigMode = true;
+
+        return;
+    }
+
+    if (g_inConfigMode)
+    {
+        g_web.loop();
+        return;
+    }
+
     // ========================================================
     // 确保 Wi-Fi 与 TCP 存活
     // ========================================================
 
     g_wifi.run();
+
+
+    // ========================================================
+    // Normal Mode 下轮询 HTTP 配置入口（STA 模式）
+    //
+    // WebServer::handleClient() 为异步非阻塞：无请求时立即
+    // 返回，不影响后续语音链路；仅保存/重置/重启时触发动作。
+    // ========================================================
+
+    g_web.loopHTTP();
 
 
     // ========================================================

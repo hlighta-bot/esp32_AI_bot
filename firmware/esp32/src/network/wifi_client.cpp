@@ -2,20 +2,23 @@
 
 #include <lwip/netdb.h>
 
-#include "../secrets.local.h"
-
 
 WifiClient::WifiClient()
-    : _pcIp()
-    , _pcPort(PC_PORT)
+    : _ssid()
+    , _password()
+    , _pcIp()
+    , _pcPort(0)
     , _started(false)
     , _tcpEstablished(false)
     , _mutex(nullptr)
 {
+    _ssid[0] = '\0';
+    _password[0] = '\0';
 }
 
 
-void WifiClient::begin()
+void WifiClient::begin(const char* ssid, const char* password,
+                       const char* pcHost, uint16_t pcPort)
 {
     if (_started) {
         return;
@@ -30,6 +33,13 @@ void WifiClient::begin()
         }
     }
 
+    // Store configuration from RuntimeConfig
+    strncpy(_ssid, ssid, sizeof(_ssid) - 1);
+    _ssid[sizeof(_ssid) - 1] = '\0';
+    strncpy(_password, password, sizeof(_password) - 1);
+    _password[sizeof(_password) - 1] = '\0';
+    _pcPort = pcPort;
+
     WiFi.mode(WIFI_STA);
 
     WiFi.setHostname("esp32-voice-ai");
@@ -42,19 +52,18 @@ void WifiClient::begin()
 
 
     /*
-     * Resolve PC_HOST.
+     * Resolve PC host.
      *
-     * Usually PC_HOST is already an IP address, so this
-     * normally succeeds in fromString().
+     * Usually already an IP address, so fromString() normally succeeds.
      */
-    if (!_pcIp.fromString(PC_HOST)) {
+    if (!_pcIp.fromString(pcHost)) {
 
         Serial.printf(
             "[wifi] resolving host: %s\n",
-            PC_HOST
+            pcHost
         );
 
-        struct hostent *host = gethostbyname(PC_HOST);
+        struct hostent *host = gethostbyname(pcHost);
 
         if (host &&
             host->h_addr_list &&
@@ -75,7 +84,7 @@ void WifiClient::begin()
         {
             Serial.printf(
                 "[wifi] failed to resolve host: %s\n",
-                PC_HOST
+                pcHost
             );
         }
     }
@@ -91,7 +100,7 @@ void WifiClient::begin()
         MDNS.addService(
             "tcp",
             "tcp",
-            PC_PORT
+            _pcPort
         );
     }
     else
@@ -104,7 +113,12 @@ void WifiClient::begin()
 
     _tcpEstablished = false;
 
-    Serial.println("[wifi] initialized");
+    Serial.printf(
+        "[wifi] initialized: ssid=%s pc=%s:%u\n",
+        _ssid,
+        _pcIp.toString().c_str(),
+        _pcPort
+    );
 }
 
 
@@ -169,12 +183,12 @@ bool WifiClient::tryConnectWifi()
 
     Serial.printf(
         "[wifi] connecting to %s\n",
-        WIFI_SSID
+        _ssid
     );
 
     WiFi.begin(
-        WIFI_SSID,
-        WIFI_PASS
+        _ssid,
+        _password
     );
 
 

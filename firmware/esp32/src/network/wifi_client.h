@@ -21,28 +21,13 @@
 #include <WiFi.h>
 #include <ESPmDNS.h>
 
-/*
- * Project/network configuration.
- *
- * This header contains:
- *   WIFI_CONNECT_TIMEOUT_MS
- *   WIFI_RETRY_INTERVAL_MS
- *   WIFI_LOCK_TIMEOUT_MS
- *   TCP_READ_TIMEOUT_MS
- *   PC_PORT
- *   PC_HOST
- *   WIFI_SSID
- *   WIFI_PASS
- */
-#include "../secrets.local.h"
-
-
 class WifiClient
 {
 public:
     WifiClient();
 
-    void begin();
+    void begin(const char* ssid, const char* password,
+               const char* pcHost, uint16_t pcPort);
     void run();
 
     bool isConnected();
@@ -60,6 +45,9 @@ private:
     bool tryConnectTcp();
 
 private:
+    char     _ssid[32];
+    char     _password[65];
+
     IPAddress _pcIp;
     uint16_t _pcPort;
 
