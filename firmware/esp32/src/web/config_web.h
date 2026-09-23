@@ -31,6 +31,10 @@ public:
 
     const char* getApSsid() const;
 
+    // 暴露底层 WebServer 引用，供其他模块（如 RobotEventServer）
+    // 复用同一个 WebServer(80) 实例注册路由，避免重复绑定端口。
+    WebServer& server();
+
 private:
     void setupRoutes();
     void handleRoot();

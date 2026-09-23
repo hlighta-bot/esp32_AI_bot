@@ -56,6 +56,20 @@ private:
     bool _started;
 
     /*
+     * mDNS responder started flag.
+     *
+     * MDNS.begin() 必须在 WiFi 连上 (WL_CONNECTED) 之后调用，
+     * 否则 responder 无法接收 224.0.0.251:5353 组播包，
+     * 外部设备（例如 ESP32-CAM）通过 MDNS.queryHost() 查询
+     * "esp32-voice-ai" 时会超时得到 0.0.0.0。
+     *
+     * begin() 里只做 WiFi.setHostname()；真正的 MDNS.begin()
+     * 放到 tryConnectWifi() 在拿到 IP 之后调用，用这个 flag
+     * 保证整个生命周期只启动一次（不会每次 Wi-Fi 重连都 restart）。
+     */
+    bool _mdnsStarted;
+
+    /*
      * Our own TCP connection state.
      *
      * IMPORTANT:

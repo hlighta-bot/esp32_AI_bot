@@ -4,6 +4,20 @@
 
 ---
 
+## Architecture Baseline · 2026-09-21
+
+本文档自 2026-09-21 起冻结为**架构基线（Architecture Baseline）**。冻结内容：
+
+* **主线 · ESP32-S3 语音**：Phase 1（✅ 已完成）→ Phase 2（🟡 进行中：语音交互质量与稳定性优化）→ Phase 3（待做：Wake Word + TinyML）→ Phase 4（待做：低功耗 + 电池 + 独立设备）
+* **视觉支线 · ESP32-CAM**：S12-1（✅ 摄像头基础）→ S12-2（🟡 人物区域候选检测）→ S12-3（待做：视觉数据通信，Wi-Fi 优先 / UART 备用）→ S12-4（待做：Face Detection）→ S12-5（待做：Face Recognition，架构决策点）→ S12-6（待做：Pan/Tilt）→ S12-7（待做：视觉 + 语音对话闭环）
+* **动态 IP / 设备发现**：hostname + mDNS（`esp32-voice-ai` / `esp32-cam` / PC），手工地址作为 fallback
+* **Web 配置系统**：基础版已完成（SoftAP / 192.168.4.1 / NVS / Wi-Fi / PC host / PC port / VAD 参数 / reboot / reset / factory-reset），未来扩展为 Dashboard / OTA / 摄像头管理 / 人脸管理 / 日志
+* **Wake Word 与 VAD 职责边界**：Wake Word 判断"是否被唤醒"；VAD 判断"用户什么时候开始 / 结束讲话"
+
+冻结含义：**冻结当前架构边界和实施顺序**，不是"以后任何内容都不能修改"。若出现新硬件能力、实际测试结果、重大架构问题，可以在架构评审后重新修改本文件。
+
+---
+
 
 # 51. 当前版本的职责划分
 
@@ -134,47 +148,68 @@ ESP32 I2S DAC → MAX98357A → Speaker
 * 固件 Wi-Fi 客户端（[`wifi_client.cpp`](../firmware/esp32/src/network/wifi_client.cpp)，TCP client + mDNS）
 * PC `wifi_server.py`（[`wifi_server.py`](../pc/wifi_server.py)，stdlib only，可迁移到 aidlux）
 * 协议扩展上行帧 RECM / RPTF（[`protocol.md`](./protocol.md#42-上行esp32--pc)）
-* ESP32 端 Energy VAD（[`energy_vad.cpp`](../firmware/esp32/src/vad/energy_vad.cpp)）
+* ESP32 端 **Energy VAD 已完成**（[`energy_vad.cpp`](../firmware/esp32/src/vad/energy_vad.cpp)，RMS 阈值 + 状态机 VAD_IDLE / VAD_SPEAK / VAD_END）
+* ESP32 Web 配置系统（基础版：SoftAP + 192.168.4.1 + NVS + Wi-Fi / PC host / PC port / VAD 参数 / 重启 / 恢复出厂）
 
 目标：
 
 > **ESP32 麦克风 + Wi-Fi 双向语音闭环跑通（Phase 1 完成）。**
 
+> **重要更正：** 早期版本曾把 Phase 2 标为"ESP32 端 VAD"。Energy VAD 已在 Phase 1 完成，Phase 2 现重定义为**语音交互质量与稳定性优化**。
+
 ---
 
-## Phase 2 — ESP32 端 VAD
+## Phase 2 — 语音交互质量与稳定性优化（进行中）
+
+Phase 2 不再"补 VAD"。Energy VAD 已在 Phase 1 完成（[`energy_vad.cpp`](../firmware/esp32/src/vad/energy_vad.cpp)），本阶段围绕**已跑通主链路的稳定性、延迟与体验**打磨：
+
+* **Energy VAD 真机调参**：`minVoiceMs` / `silenceMs` / 能量阈值在不同环境噪声下微调，减少漏检 / 误触发 / 长静音被截断
+* **更强 VAD 评估（可选）**：WebRTC VAD 或 Silero VAD 作为 Energy VAD 的候选升级路径，不阻塞主线
+* **流式 TTS / 分块 PLAY**：Edge TTS 边合成边推送，压低首字延迟（当前是一次合成完再播）
+* **TCP 连接与音频缓冲稳定性**：RECM 分块、PLAY 分块 ACK、断线重连、心跳、超时
+* **端到端延迟压测**：说话开始 → 首字播放的 wall-clock，分块 ACK 与上行下行并行化
+
+目标：
+
+> **让 Phase 1 主链路在日常使用下稳定、低延迟、可长时间运行。**
+
+---
+
+## Phase 3 — Wake Word + TinyML（对话入口演进）
+
+Phase 3 引入 **Wake Word**，作为对话入口。**Wake Word 与 VAD 不是一回事**：
 
 ```text
-持续采集
- ↓
-VAD 触发
- ↓
-开始上传
- ↓
-静音判定结束
- ↓
-停止上传
+Wake Word ≠ VAD
+  Wake Word：回答"是否被唤醒"（例如说"小爱同学 / Hey ESP32"）
+  VAD：回答"用户什么时候开始 / 结束讲话"（唤醒之后才需要）
 ```
 
-目标：减少无效流量，降低 PC 侧唤醒延迟。
-
----
-
-## Phase 3 — Wake Word + TinyML
+Phase 3 完成后的最终语音链路：
 
 ```text
-持续采集（低功耗）
- ↓
+持续监听（低功耗）
+  ↓
 Wake Word 命中
- ↓
-开始录音 / 上传
- ↓
-对话结束
- ↓
-回到低功耗
+  ↓
+VAD 触发开始（VAD_SPEAK）
+  ↓
+Wi-Fi 上行 ASR
+  ↓
+LLM
+  ↓
+TTS 合成
+  ↓
+Wi-Fi 下行播放
+  ↓
+VAD 触发结束（VAD_END）
+  ↓
+回到持续监听
 ```
 
-可选部署：WakeNet / Picovoice / 自训练关键词模型。
+可选部署：WakeNet / Picovoice / 自训练关键词模型（MLTK / TFLite Micro）。
+
+Phase 3 不改变 Phase 1 主链路：无 Wake Word 时，按键 / VAD 直触仍然可用。
 
 ---
 
@@ -210,41 +245,55 @@ CPU 功耗
 
 # 54. 最终目标架构
 
+语音主线（ESP32-S3，独立节点）与视觉支线（ESP32-CAM，独立节点）在物理上是**两块 ESP32**，通过 Wi-Fi 与 PC 服务器连接。**Vision 推理位置（ESP32-S3 / PC / 其他边缘设备）是未来架构决策点，当前未定**。
+
 ```text
-                 ┌──────────────────────┐
-                 │      ESP32-S3        │
-                 │                      │
-                 │   I2S Microphone     │
-                 │          │           │
-                 │          ▼           │
-                 │      TinyML          │
-                 │    Wake Word         │
-                 │          │           │
-                 │          ▼           │
-                 │        Wi-Fi         │
-                 └──────────┬───────────┘
-                            │
-                            ▼
-                  PC 服务器 / 云
-                (ASR + LLM + TTS)
-                            │
-                            ▼
-                        Wi-Fi 下行
-                            │
-                            ▼
-                 ┌──────────────────────┐
-                 │      ESP32-S3        │
-                 │          │           │
-                 │          ▼           │
-                 │         I2S          │
-                 └──────────┬───────────┘
-                            │
-                            ▼
-                       MAX98357A
-                            │
-                            ▼
-                        Speaker
+        ┌───────────────────────────────────┐
+        │            ESP32-S3               │
+        │  (Audio 主节点，独立)              │
+        │                                   │
+        │  MAX9814 ADC (GPIO1)              │
+        │         │                         │
+        │         ▼                         │
+        │  Wake Word (TinyML)  [Phase 3]    │
+        │         │  命中                    │
+        │         ▼                         │
+        │  VAD（开始/结束讲话）  [Phase 1 已] │
+        │         │                         │
+        │         ▼                         │
+        │  Wi-Fi TCP 上行 (RECM/RPTF)       │
+        └──────────────┬────────────────────┘
+                       │
+                       ▼
+        ┌───────────────────────────────────┐
+        │         PC 服务器 / 云             │
+        │  ASR + LLM + TTS + 视觉推理(?)     │
+        │  （当前只做 ASR+LLM+TTS；          │
+        │   Vision 推理位置待定）             │
+        └──────┬──────────────────────┬─────┘
+               │                      │
+               ▼ Wi-Fi 下行 PLAY+ACK  ▼ (可选)
+        ┌──────────────┐      ┌───────────────────────┐
+        │  ESP32-S3    │      │      ESP32-CAM        │
+        │  I2S DAC     │      │  (Vision 节点，独立)   │
+        │    ↓         │      │                       │
+        │  MAX98357A   │      │  OV2640 → JPEG → 网络  │
+        │    ↓         │      │  hostname / mDNS      │
+        │  🔊 Speaker  │      └───────────┬───────────┘
+        └──────────────┘                  │
+                                          │ (数据通信：Wi-Fi 优先，
+                                          │  UART 保留为低延迟 / 备用)
+                                          ▼
+                                   ESP32-S3 / PC
+                                   （接收人物坐标 → Pan/Tilt）
 ```
+
+要点：
+
+* **Wake Word ≠ VAD**：Wake Word 判断"是否唤醒"，VAD 判断"用户什么时候开始 / 结束讲话"。
+* **ESP32-CAM 是独立节点**，物理上不是 ESP32-S3 的从机。它只负责把摄像头画面通过 Wi-Fi 传出去；**Vision 推理位置是未来架构决策点**（可能落在 ESP32-S3 / PC / 其他边缘设备），当前不背 Face Recognition。
+* **数据通信方式默认 Wi-Fi**：ESP32-S3 与 ESP32-CAM 都是 Wi-Fi 节点，都支持 mDNS / hostname。UART 保留作为低延迟 / 备用方案，不作为默认方案。
+* **动态 IP / 设备发现**：所有设备（ESP32-S3、ESP32-CAM、PC）都可能拿到变化中的 DHCP IP，必须走 hostname + mDNS 发现；手工地址配置作为 fallback。
 
 最终设备可以脱离：
 
@@ -261,7 +310,37 @@ PC 扬声器
 
 ---
 
+# 54A. Web 配置系统（现状 vs 未来）
+
+**基础 Web 配置已实现**（Phase 1 已完成）：
+
+* SoftAP 配网模式（无 Wi-Fi 时启动热点）
+* 固定访问地址 `http://192.168.4.1`
+* NVS 持久化存储
+* Wi-Fi SSID / password 配置
+* PC host / PC port 配置
+* VAD 参数（阈值、minVoiceMs、silenceMs）配置
+* 重启 / 恢复出厂 / 出厂复位
+
+**未来 Web 管理面板（未做，属 Phase 2 及以后）**：
+
+* Dashboard（连接状态、CPU / 内存 / 电池）
+* OTA 升级
+* 摄像头管理（ESP32-CAM 状态、快照预览）
+* 人脸管理（Face Recognition 阶段才需要）
+* 日志查看与导出
+* Web 端音频回放
+
+---
+
 # 55. 开发阶段总表
+
+**主线路径（Phase 1-4）**：ESP32-S3 语音 AI 设备。
+**支线（Step 12）**：ESP32-CAM + OV2640 视觉 + Pan/Tilt 舵机，与语音主链路**并行推进，互不阻塞**。物理上是**独立的第二块 ESP32**（经典 ESP32-WROOM-32，非 ESP32-S3，无 PSRAM）。
+
+> **注意：** HC-SR04 超声波距离 + ESP8266 + MG90S 舵机演示是**独立项目**，不属于本 `esp32-voice-ai` 仓库范围，未列入本表。
+
+## 主线 · ESP32-S3 语音
 
 | 阶段 | 功能 | 状态 |
 | -- | ------------------ | -------------- |
@@ -275,14 +354,44 @@ PC 扬声器
 | 8  | Wi-Fi TCP Transport（双向 + ACK） | 已完成（Phase 1） |
 | 9  | PC `wifi_server.py`（stdlib only） | 已完成（Phase 1） |
 | 10 | 协议扩展（RECM / RPTF 上行帧） | 已完成（Phase 1） |
-| 11 | ESP32 端 Energy VAD（能量阈值） | 已完成（Phase 1，基础版） |
-| 12 | 更强 VAD（WebRTC / Silero） | Phase 2 |
-| 13 | 流式 TTS / 分块推送 | Phase 2 |
-| 14 | Wake Word | Phase 3 |
-| 15 | TinyML（Wake Word 模型） | Phase 3 |
-| 16 | 电池供电 / 低功耗 | Phase 4 |
-| 17 | 独立 Voice AI | 最终目标 |
-| 18 | aidlux 迁移（Server → Android slim Python） | 迁移预留（见 [`architecture.md`](./architecture.md#105-aidlux-迁移预留)） |
+| 11 | ESP32 端 **Energy VAD（能量阈值，已完成）** | 已完成（Phase 1，基础版） |
+| 12 | Web 配置系统（SoftAP + 192.168.4.1 + NVS + Wi-Fi/PC/VAD 参数 + 重启/恢复出厂） | 已完成（Phase 1 基础版） |
+| 13 | Energy VAD 真机调参 + 更强 VAD 评估（WebRTC / Silero） | Phase 2 |
+| 14 | 流式 TTS / 分块 PLAY（压低首字延迟） | Phase 2 |
+| 15 | TCP 稳定性 + 端到端延迟压测 | Phase 2 |
+| 16 | Dashboard / OTA / 日志 / 摄像头管理（Web 面板扩展） | Phase 2-3 |
+| 17 | Wake Word | Phase 3 |
+| 18 | TinyML（Wake Word 模型：WakeNet / Picovoice / 自训练） | Phase 3 |
+| 19 | 电池供电 / 低功耗 | Phase 4 |
+| 20 | 独立 Voice AI | 最终目标 |
+| 21 | aidlux 迁移（Server → Android slim Python） | 迁移预留（见 [`architecture.md`](./architecture.md#105-aidlux-迁移预留)） |
+
+## 视觉支线 · Step 12（ESP32-CAM，独立设备）
+
+Step 12 是**独立的第二块 ESP32**（ESP32-CAM + OV2640）。**Vision 推理位置是未来架构决策点**（可能在 ESP32-S3、PC 或其他边缘设备），当前未定；ESP32-CAM 只负责通过 Wi-Fi 把画面传出去，**不背 Face Recognition**。
+
+视觉 AI 演进的三阶段（概念区分）：
+
+* **人物区域候选检测**：肤色 + 连通域等简单启发式，输出的是"疑似人物区域"，不是人脸
+* **Face Detection**：真正的人脸框检测（Haar / MTCNN / YOLO-Face / InsightFace SCRFD 等）
+* **Face Recognition**：人脸识别（ArcFace / InsightFace embedding + 身份比对），涉及隐私与合规
+
+| 阶段 | 功能 | 状态 |
+| -- | ------------------ | -------------- |
+| S12-1 | ESP32-CAM 摄像头基础（Web 首页 + `/capture` + `/stream`） | 已完成（2026-09-16，测试见 [`test-2026-09-16-step12-1-cam-base.md`](./test-2026-09-16-step12-1-cam-base.md)） |
+| S12-2 | **人物区域候选检测**（当前实现：YCbCr 肤色 + 8-邻域 BFS 连通域 + Overlay，**不是人脸检测**） | 进行中（2026-09-18 起；可行性见 [`STEP_12_2_A_FEASIBILITY.md`](./STEP_12_2_A_FEASIBILITY.md)，测试见 [`test-2026-09-19-step12-2-a-person-detect.md`](./test-2026-09-19-step12-2-a-person-detect.md)） |
+| S12-3 | **ESP32-CAM → ESP32-S3 / PC 视觉数据通信**：**优先 Wi-Fi 网络协议**（JSON/HTTP/WS 皆可），UART 保留为低延迟 / 备用方案；两端都是 Wi-Fi 节点，均支持 hostname + mDNS | 待做（见 [`STEP_12_VISION_SERVO_PLAN.md`](./STEP_12_VISION_SERVO_PLAN.md)；原 UART-first 计划需重评估） |
+| S12-4 | **Face Detection**（真正的人脸框检测，替代或补充 S12-2 的肤色区域候选） | 待做 |
+| S12-5 | **Face Recognition**（人脸识别，需明确隐私 / 合规边界） | 待做（架构决策点，非近期目标） |
+| S12-6 | ESP32-S3 Pan/Tilt 舵机（GPIO 4 / 5，接收 S12-3 坐标后追踪） | 待做 |
+| S12-7 | ESP32-CAM ↔ ESP32-S3 ↔ PC 视觉 + 语音对话闭环 | 待做 |
+
+## 网络与设备发现（跨主线 / 支线）
+
+* **动态 IP / mDNS**：ESP32-S3、ESP32-CAM、PC 都是 DHCP 客户端，IP 会变化。必须通过 **hostname + mDNS** 相互发现，Web 配置页支持主机名配置。
+* **hostname 统一**：固件实际使用 `esp32-voice-ai`（见 [`wifi_client.cpp`](../firmware/esp32/src/network/wifi_client.cpp:96) 与 [`main.cpp`](../firmware/esp32/src/main.cpp:612)）。**历史文档中出现的 `esp32-voice` 是旧名**，应统一到 `esp32-voice-ai`；配置示例 [`config.local.json.example`](../config.local.json.example) 也使用 `esp32-voice-ai`。
+* **ESP32-CAM hostname**：Step 12-1 起默认 `esp32-cam`，后续应统一到项目命名规范。
+* **手工地址 fallback**：mDNS 不可用时允许在 Web 配置里填静态 IP。
 
 ---
 
@@ -594,25 +703,54 @@ I2S 输出 → MAX98357A → 扬声器
 
 # 60. 项目下一步
 
-Phase 1 主链路已跑通，按优先级推进：
+Phase 1 主链路已跑通。**主线（语音）与支线（Step 12 视觉 + Pan/Tilt）并行推进，互不阻塞**。
+
+## 主线 · 语音（Phase 1-4）
 
 ```text
-① 稳定调参：Energy VAD 阈值、chunk size、TCP 超时（Phase 2）
+Phase 1 ✅（已完成 2026-09-09）
+   Energy VAD + Wi-Fi 双向 + Web 配置（基础）
       ↓
-② 更强 VAD：WebRTC / Silero（Phase 2）
+Phase 2 🟡（进行中）
+   Energy VAD 真机调参 + 更强 VAD 评估 + 流式 TTS + TCP 稳定性 + 延迟压测
       ↓
-③ 流式 TTS：分块 PLAY，压低首字延迟（Phase 2）
+Phase 3 🟡（进行中）
+   Wake Word（对话入口，不等于 VAD）+ TinyML 模型
       ↓
-④ Wake Word：始终监听但不上传（Phase 3）
-      ↓
-⑤ TinyML：WakeNet / 自训练关键词模型（Phase 3）
-      ↓
-⑥ aidlux 迁移：Server 迁到安卓 slim Python（迁移预留）
-      ↓
-⑦ 电池供电 / 低功耗（Phase 4）
-      ↓
-⑧ 独立设备
+Phase 4 🟡
+   电池供电 / 低功耗 → 独立 Wi-Fi Voice AI Device
 ```
+
+## 视觉支线 · Step 12（ESP32-CAM，独立设备）
+
+```text
+S12-1 ✅ 摄像头基础（Web + /capture + /stream，2026-09-16）
+      ↓
+S12-2 🟡 人物区域候选检测（当前：YCbCr 肤色 + 8-邻域 BFS，不是人脸检测）
+      ↓
+S12-3 🟡 ESP32-CAM → ESP32-S3 / PC 视觉数据通信（Wi-Fi 优先，UART 备用）
+      ↓
+S12-4 🟡 Face Detection（真正的人脸框检测）
+      ↓
+S12-5 🟡 Face Recognition（人脸识别，架构决策点，涉及隐私与合规）
+      ↓
+S12-6 🟡 ESP32-S3 Pan/Tilt 舵机（接收坐标后追踪）
+      ↓
+S12-7 🟡 视觉 + 语音对话闭环
+```
+
+## 跨线基础设施（贯穿全程）
+
+* **动态 IP / 设备发现**：hostname + mDNS（`esp32-voice-ai` / `esp32-cam` / PC），手工地址作为 fallback
+* **hostname 统一**：固件 `esp32-voice-ai`，历史文档中的 `esp32-voice` 是旧名，需统一
+* **Web 配置扩展**：基础版已完成；未来扩展为 Dashboard / OTA / 日志 / 摄像头管理 / 人脸管理
+* **aidlux 迁移**：Server 迁到安卓 slim Python（迁移预留，不阻塞主线）
+
+## 明确不做（或不属于本项目）
+
+* **HC-SR04 + ESP8266 + MG90S 舵机演示**：独立项目，不纳入本仓库
+* **ESP32 本地跑 LLM**：见 §52，目标期不做
+* **Face Recognition**（S12-5）：属于架构决策点，暂不作为近期目标
 
 最终形态：
 
@@ -624,7 +762,10 @@ Phase 1 主链路已跑通，按优先级推进：
      ESP32-S3
          │
     Wake Word
-         │
+         │  命中
+         ▼
+        VAD
+         │  开始/结束
          ▼
        Wi-Fi
          │
@@ -647,6 +788,13 @@ Phase 1 主链路已跑通，按优先级推进：
          ▼
          🔊
        Speaker
+
+    ┌───────────────┐         Wi-Fi         ┌──────────────────┐
+    │  ESP32-CAM    │ ────────────────────►  │  ESP32-S3 / PC   │
+    │ (Vision 节点)  │        hostname+mDNS  │  (Vision 推理     │
+    │   OV2640      │                        │   位置待定)       │
+    └───────────────┘                        └──────────────────┘
+       数据通信：Wi-Fi 优先，UART 保留为低延迟 / 备用
 ```
 
 **目标：一个可以长期电池供电、通过 Wi-Fi 连接 AI、支持语音唤醒并进行连续语音对话的独立 ESP32 Voice AI 设备。**

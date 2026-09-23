@@ -161,7 +161,7 @@ MAX9814 是**模拟** MEMS 麦克风（不是 I2S），输出模拟音频电压�
 Wi-Fi 主链路（无需接线）：
 
 ```text
-  ESP32 (STA, mDNS esp32-voice.local)  ──TCP:8888──►  PC / aidlux wifi_server.py
+  ESP32 (STA, mDNS esp32-voice-ai.local)  ──TCP:8888──►  PC / aidlux wifi_server.py
 ```
 
 ---

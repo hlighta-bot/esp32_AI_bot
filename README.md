@@ -114,6 +114,10 @@ SYSTEM_PROMPT="只用一句话回答。" python voice_chat.py --engine sensenova
 | [`docs/test.md`](./docs/test.md) | Test 1-6 分步验证 |
 | [`docs/troubleshooting.md`](./docs/troubleshooting.md) | 常见故障与定位方法 |
 | [`docs/roadmap.md`](./docs/roadmap.md) | 阶段划分（Phase 1-4）、常用命令速查、检查清单、下一阶段 |
+| [`docs/STEP_12_VISION_SERVO_PLAN.md`](./docs/STEP_12_VISION_SERVO_PLAN.md) | Step 12 视觉 + Pan/Tilt 硬件调查与实施计划（ESP32-CAM 支线） |
+| [`docs/STEP_12_2_A_FEASIBILITY.md`](./docs/STEP_12_2_A_FEASIBILITY.md) | Step 12-2-A 可行性分析（QQVGA RGB565 + `frame2jpg_cb` + PersonDetector） |
+| [`docs/test-2026-09-16-step12-1-cam-base.md`](./docs/test-2026-09-16-step12-1-cam-base.md) | Step 12-1 摄像头基础测试用例（`/`、`/capture`、`/stream`） |
+| [`docs/test-2026-09-19-step12-2-a-person-detect.md`](./docs/test-2026-09-19-step12-2-a-person-detect.md) | Step 12-2-A 本地人物检测测试用例（YCbCr 肤色 + 连通域 + Overlay） |
 
 ---
 
@@ -139,11 +143,21 @@ esp32-voice-ai/
 │   └── roadmap.md
 │
 ├── firmware/
-│   └── esp32/                # PlatformIO 固件
-│       ├── platformio.ini
+│   ├── esp32/                # PlatformIO 固件（主工程：ESP32-S3 语音 AI）
+│   │   ├── platformio.ini
+│   │   ├── boards/
+│   │   │   └── esp32-s3-n16r8.json
+│   │   └── src/main.cpp
+│   │
+│   ├── esp32-mic-test/       # 麦克风 ADC 采集测试（独立 env）
+│   └── esp32-cam/            # Step 12 支线：ESP32-CAM + OV2640 视觉（独立 env）
+│       ├── platformio.ini    # env:esp32-cam
 │       ├── boards/
-│       │   └── esp32-s3-n16r8.json
-│       └── src/main.cpp
+│       │   └── esp32cam.json
+│       └── src/
+│           ├── main.cpp                # Web 首页 + /capture + /stream + Overlay
+│           ├── person_detector.h/cpp   # YCbCr 肤色 + 8-邻域 BFS 连通域
+│           └── draw_overlay.h/cpp      # 5×7 bitmap font + 检测框 / 文本绘制
 │
 ├── pc/                       # Python 端
 │   ├── .env                  # 不入库
@@ -183,7 +197,7 @@ esp32-voice-ai/
 | 位深 / 声道 | 16-bit / Mono |
 | 分块大小 | 4096 字节 |
 | 功放 | MAX98357A |
-| 网络 | Wi-Fi TCP，端口 8888（mDNS: `esp32-voice.local`） |
+| 网络 | Wi-Fi TCP，端口 8888（mDNS: `esp32-voice-ai.local`） |
 | 串口波特率 | 921600（仅用于烧录 / 日志 / 回退） |
 | VAD | 能量阈值（`VadState`：IDLE / SPEAK / END） |
 
@@ -253,4 +267,31 @@ Server 只用 Python 标准库、无 asyncio、阻塞 I/O，可直接迁移到�
 
 保留用于链路验证与烧录日志，不作为长期架构。
 
-后续路线见 [`docs/roadmap.md`](./docs/roadmap.md)。
+### 当前路线速览
+
+* **Phase 1 · 目标期主链路**（✅ 已完成 2026-09-09）：Energy VAD + Wi-Fi 双向 + Web 配置基础版
+* **Phase 2 · 语音交互质量与稳定性优化**（🟡 进行中）：Energy VAD 真机调参 + 更强 VAD 评估 + 流式 TTS + TCP 稳定性 + 端到端延迟压测
+* **Phase 3 · Wake Word + TinyML**（待做）：Wake Word ≠ VAD；Wake Word 判断"是否被唤醒"，VAD 判断"用户什么时候开始 / 结束讲话"
+* **Phase 4 · 低功耗 + 电池 + 独立设备**（待做）
+* **Step 12 视觉支线**（🟡 并行推进）：详见下节
+* **Canonical hostname**：`esp32-voice-ai`（mDNS `.local` 解析用）
+
+后续路线与 Architecture Baseline（2026-09-21）见 [`docs/roadmap.md`](./docs/roadmap.md)。
+
+---
+
+## 支线：Step 12 视觉 + Pan/Tilt（进行中）
+
+与语音主链路**并行**推进，物理上是**独立的第二块 ESP32**（AI-Thinker ESP32-CAM + OV2640，经典 ESP32 芯片，非 ESP32-S3）。**CAM → S3 / PC 视觉数据通信走 Wi-Fi 优先，UART 保留为低延迟 / 备用方案**（两块设备都是 Wi-Fi 节点，均支持 hostname + mDNS）。
+
+- **Step 12-1 · 摄像头基础**（2026-09-16，已通过）：`firmware/esp32-cam` env，Web 首页 + `/capture` + `/stream` MJPEG。测试用例见 [`docs/test-2026-09-16-step12-1-cam-base.md`](./docs/test-2026-09-16-step12-1-cam-base.md)。
+- **Step 12-2 · 本地人物区域候选检测**（2026-09-18 起）：切换 `PIXFORMAT_RGB565` + `FRAMESIZE_QQVGA`（160×120），用 YCbCr 肤色阈值 + 8-邻域 BFS 连通域做低资源**人物区域候选检测**（**不是 Face Detection，也不是 Face Recognition**），检测结果直接 overlay 到 JPEG。可行性分析与测试用例见 [`docs/STEP_12_2_A_FEASIBILITY.md`](./docs/STEP_12_2_A_FEASIBILITY.md) / [`docs/test-2026-09-19-step12-2-a-person-detect.md`](./docs/test-2026-09-19-step12-2-a-person-detect.md)。
+- 硬件调查与总计划见 [`docs/STEP_12_VISION_SERVO_PLAN.md`](./docs/STEP_12_VISION_SERVO_PLAN.md)。
+- **Vision 演进**（见 [`docs/roadmap.md`](./docs/roadmap.md) §55）：人物区域候选检测（S12-2）→ Face Detection（S12-4）→ Face Recognition（S12-5，架构决策点）。
+- **明确不做**：YOLO / TFLite / 神经网络 / 云端视觉（受经典 ESP32 320 KB SRAM、无 PSRAM 的硬件上限限制）；Face Recognition 属架构决策点，非近期目标。
+
+---
+
+## 独立项目（不属于本仓库）
+
+- **HC-SR04 超声波 + ESP8266 + MG90S 舵机演示**：独立项目，不纳入本 `esp32-voice-ai` 仓库。

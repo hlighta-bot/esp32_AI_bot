@@ -8,7 +8,10 @@
 #include "vad/energy_vad.h"
 #include "config/device_config.h"
 #include "web/config_web.h"
+#include "web/robot_event_server.h"
 #endif
+
+#include "assets/hi_hello.h"
 
 #include "protocol/frame.h"
 
@@ -113,13 +116,34 @@ int16_t stereoBuffer[PCM_CHUNK_SIZE];
 
 #ifdef FIRMWARE_MODE_WIFI
 
-static WifiClient   g_wifi;
-static MicAdc       g_mic;
-static EnergyVad    g_vad;
-static MicUploader  g_uploader;
-static DeviceConfig g_config;
-static ConfigWeb    g_web;
-static bool         g_inConfigMode = false;
+static WifiClient      g_wifi;
+static MicAdc          g_mic;
+static EnergyVad       g_vad;
+static MicUploader     g_uploader;
+static DeviceConfig    g_config;
+static ConfigWeb       g_web;
+static RobotEventServer g_robotEvent;
+static bool            g_inConfigMode = false;
+
+// ------------------------------------------------------------
+// Robot event 播放"你好！"的 pending 标志。
+//
+// 引入原因：RobotEventServer 的 HTTP 回调在 g_web.loopHTTP()
+//           内部执行（同步 send(200) 后返回）。若同一轮 loop
+//           里紧接着调用阻塞约 1.87 s 的 playHelloHi()，
+//           WebServer 的 socket 响应可能被延迟到 playHelloHi
+//           结束后才真正 flush 到 wire，ESP32-CAM 侧 HTTP
+//           客户端可能触发 read Timeout（HTTPClient error -11）。
+//
+// 解决方案：consumePlayTrigger() 那一轮只把 flag 转成 pending，
+//           本轮 return 让出 CPU 让 WebServer 完成 TCP 应答；
+//           下一轮 loop 才进入 playHelloHi() 阻塞播放。
+//
+// 幂等性：RobotEventServer 内部状态机 (NOT_PRESENT / PRESENT)
+//           已保证重复 person_detected 不会再置位 s_playTriggered，
+//           因此 s_helloPending 不会因重复触发而累积。
+// ------------------------------------------------------------
+static bool s_helloPending = false;
 
 #endif
 
@@ -523,6 +547,58 @@ void playPCM(
 
 
 // ============================================================
+// playHelloHi
+//
+// 播放 assets/hi_hello.h 中内嵌的"你好！" PCM。
+// 分块调用 playChunk()，块大小 = PCM_CHUNK_SIZE (4096)。
+//
+// 阻塞时长约 1.87 秒（59904 B / 16000 * 2）；
+// 由 main.cpp::loop() 触发（不在 HTTP 回调中直接调用）。
+// ============================================================
+
+void playHelloHi()
+{
+    size_t offset = 0;
+    size_t total  = HI_HELLO_PCM_SIZE;
+
+    Serial.printf(
+        "[play-hi] playing hi_hello (%u bytes)\n",
+        (unsigned)total
+    );
+
+    while (offset < total)
+    {
+        size_t chunk = total - offset;
+
+        if (chunk > PCM_CHUNK_SIZE)
+        {
+            chunk = PCM_CHUNK_SIZE;
+        }
+
+        // 16-bit 采样必须偶数字节
+        if (chunk & 1)
+        {
+            chunk--;
+        }
+
+        if (chunk == 0)
+        {
+            break;
+        }
+
+        playChunk(
+            const_cast<uint8_t *>(&HI_HELLO_PCM[offset]),
+            chunk
+        );
+
+        offset += chunk;
+    }
+
+    Serial.println("[play-hi] done");
+}
+
+
+// ============================================================
 // setup
 // ============================================================
 
@@ -552,6 +628,9 @@ void setup()
     {
         g_inConfigMode = true;
         g_web.begin(g_config);
+
+        // Config Mode 下也允许 ESP32-CAM 上报事件（同一 WebServer）
+        g_robotEvent.begin(g_web.server());
 
         Serial.println(
             "Configuration mode enabled (SoftAP + captive portal)."
@@ -614,6 +693,18 @@ void setup()
         // ========================================================
 
         g_web.beginHTTP(g_config);
+
+        // ========================================================
+        // Robot Event HTTP 接收器（ESP32-CAM → /robot/event）
+        //
+        // 借用 ConfigWeb 已启动的同一个 WebServer(80) 实例注册路由，
+        // 避免两个 WebServer 实例同时绑定 port 80 冲突。
+        // ConfigWeb::loopHTTP() 已负责 handleClient()，
+        // RobotEventServer::loop() 为空实现。
+        // 见 web/robot_event_server.cpp。
+        // ========================================================
+
+        g_robotEvent.begin(g_web.server());
 
 
         Serial.println(
@@ -739,7 +830,10 @@ void loop()
         // 4. 启动 SoftAP + DNS + Web（运行时重新初始化）
         g_web.begin(g_config);
 
-        // 4. 切换 loop() 分支
+        // 5. 路由被 stop()/begin() 重建，重新注册 /robot/event
+        g_robotEvent.begin(g_web.server());
+
+        // 6. 切换 loop() 分支
         g_inConfigMode = true;
 
         return;
@@ -766,6 +860,42 @@ void loop()
     // ========================================================
 
     g_web.loopHTTP();
+
+    // ========================================================
+    // Robot Event HTTP 轮询（ESP32-CAM → /robot/event）
+    //
+    // 同样为异步非阻塞。回调里只做状态切换与 flag 置位，
+    // 不阻塞播放。播放由下方 consumePlayTrigger 分支完成。
+    // ========================================================
+
+    g_robotEvent.loop();
+
+    // ========================================================
+    // 消费"你好！"播放触发
+    //
+    // 触发时机：ESP32-CAM POST /robot/event 首次 person_detected。
+    // 阻塞时长约 1.87 秒（59904 B / 16000 * 2）。
+    //
+    // 与 TCP voice AI 主链路互斥：
+    //   - playHelloHi() 期间不读 g_wifi，PC 侧的 PLAY 会被
+    //     缓存在 TCP 缓冲区，之后按标准流程处理。
+    //   - 播放结束后调用 notifyPlaybackDone()，触发 MicUploader
+    //     的 500 ms cooldown，避免"你好！"的余音被 VAD 误识。
+    // ========================================================
+
+    if (g_robotEvent.consumePlayTrigger())
+    {
+        s_helloPending = true;
+        return;
+    }
+
+    if (s_helloPending)
+    {
+        s_helloPending = false;
+        playHelloHi();
+        g_uploader.notifyPlaybackDone();
+        return;
+    }
 
 
     // ========================================================

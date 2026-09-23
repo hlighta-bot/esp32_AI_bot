@@ -10,6 +10,7 @@ WifiClient::WifiClient()
     , _pcPort(0)
     , _started(false)
     , _tcpEstablished(false)
+    , _mdnsStarted(false)
     , _mutex(nullptr)
 {
     _ssid[0] = '\0';
@@ -91,22 +92,17 @@ void WifiClient::begin(const char* ssid, const char* password,
 
 
     /*
-     * Start mDNS.
+     * Do NOT call MDNS.begin() here.
+     *
+     * At this point WiFi is not yet connected; starting the mDNS
+     * responder before we own a link-local address means the
+     * responder won't receive any 224.0.0.251:5353 multicast
+     * queries, so a remote ESP32-CAM calling MDNS.queryHost()
+     * on us will fail with "Query Failed".
+     *
+     * Move MDNS.begin() into tryConnectWifi(), which runs only
+     * after WiFi.status() == WL_CONNECTED.
      */
-    if (MDNS.begin("esp32-voice-ai")) {
-
-        Serial.println("[wifi] mDNS started");
-
-        MDNS.addService(
-            "tcp",
-            "tcp",
-            _pcPort
-        );
-    }
-    else
-    {
-        Serial.println("[wifi] mDNS start failed");
-    }
 
 
     _started = true;
@@ -229,6 +225,58 @@ bool WifiClient::tryConnectWifi()
         "[wifi] RSSI: %d dBm\n",
         WiFi.RSSI()
     );
+
+
+    /*
+     * Start mDNS responder AFTER Wi-Fi is fully up.
+     *
+     * Why here:
+     *   MDNS.begin() before Wi-Fi connect cannot see multicast
+     *   traffic on 224.0.0.251:5353, so it never answers remote
+     *   mDNS queries (e.g. ESP32-CAM calling queryHost on us).
+     *   Moved out of begin() specifically for this reason.
+     *
+     * Idempotent via _mdnsStarted: subsequent Wi-Fi reconnects
+     * reuse the already-registered responder instead of restarting.
+     *
+     * Loop-time budget:
+     *   playHelloHi() blocks loop() for ~1.87 s. During that
+     *   window the mDNS responder can be slow to answer, but
+     *   ESP32-CAM uses ROBOT_MDNS_TIMEOUT_MS = 500 ms and
+     *   caches the resolved IP for ROBOT_IP_CACHE_MS = 60 s,
+     *   so an occasional missed query is acceptable. Do not
+     *   refactor the audio playback path for this.
+     */
+    if (!_mdnsStarted)
+    {
+        // --- mDNS 诊断：打印 begin() 返回值 + 主机名 ---
+        const bool mdnsOk = MDNS.begin("esp32-voice-ai");
+        Serial.printf("[MDNS] begin(\"esp32-voice-ai\") returned: %s\n",
+                      mdnsOk ? "true" : "false");
+
+        if (mdnsOk)
+        {
+            // addService 也打印返回值，便于排查"注册失败但被吞掉"的情况
+            const bool svcOk = MDNS.addService(
+                "tcp",
+                "tcp",
+                _pcPort
+            );
+            Serial.printf("[MDNS] addService(tcp/tcp,%u) returned: %s\n",
+                          (unsigned)_pcPort,
+                          svcOk ? "true" : "false");
+
+            Serial.printf("[MDNS] hostname=esp32-voice-ai.local\n");
+            Serial.printf("[MDNS] localIP=%s\n",
+                          WiFi.localIP().toString().c_str());
+
+            _mdnsStarted = true;
+        }
+        else
+        {
+            Serial.println("[MDNS] start failed (resp=0/false)");
+        }
+    }
 
 
     return true;

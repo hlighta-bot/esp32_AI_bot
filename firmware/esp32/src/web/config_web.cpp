@@ -286,6 +286,11 @@ const char* ConfigWeb::getApSsid() const
     return _ssid;
 }
 
+WebServer& ConfigWeb::server()
+{
+    return _server;
+}
+
 // ============================================================
 // setupRoutes
 // ============================================================

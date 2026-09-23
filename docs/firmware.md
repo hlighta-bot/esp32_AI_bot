@@ -215,7 +215,7 @@ vim config.local.json
   "wifi_pass": "你的路由器密码",
   "pc_host": "192.168.1.20",
   "pc_port": 8888,
-  "esp32_hostname": "esp32-voice"
+  "esp32_hostname": "esp32-voice-ai"
 }
 ```
 
@@ -227,7 +227,7 @@ vim config.local.json
 | `wifi_pass` | `WIFI_PASS` | 路由器密码，WPA/WPA2 |
 | `pc_host` | `PC_HOST` | Server 静态 IP 或 `my-pc.local`（mDNS 主机名） |
 | `pc_port` | `PC_PORT` | Server 端口，默认 8888 |
-| `esp32_hostname` | `ESP32_HOSTNAME` | mDNS 主机名，PC 侧可 `ping esp32-voice.local` |
+| `esp32_hostname` | `ESP32_HOSTNAME` | mDNS 主机名，PC 侧可 `ping esp32-voice-ai.local` |
 
 ## 38.3 编译 / 烧录
 

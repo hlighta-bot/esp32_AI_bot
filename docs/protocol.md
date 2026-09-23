@@ -42,7 +42,7 @@ ESP32 (MAX9814 → VAD → RECM 流 → RPTF)      PC / aidlux (wifi_server.py)
 | Server 绑定 | `0.0.0.0`（局域网开放） | [`config.WIFI_HOST_BIND`](../pc/config.py) |
 | 客户端 TCP_NODELAY | 开启（减少首包延迟） | `wifi_server.py` / `WifiClient` |
 | TCP 读写超时 | `5 s` | `config.TCP_IO_TIMEOUT` |
-| mDNS | `esp32-voice.local` | `firmware/network/wifi_client.cpp` |
+| mDNS | `esp32-voice-ai.local` | `firmware/network/wifi_client.cpp` |
 
 > 客户端（ESP32）主动发起连接；PC 端 `wifi_server.py` 只做 listener。
 > 这样即使路由器启用了 AP-Isolation，只要 ESP32 能到 PC，链路就能通。

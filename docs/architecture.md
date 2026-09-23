@@ -177,7 +177,7 @@ PC mic.py ─► asr.py ─► llm.py ─► tts.py ─► send_wav.py
 |------|------|------|
 | Wi-Fi 凭据 | [`config.local.json`](../config.local.json.example) | 单一真相源（JSON）；`scripts/gen_secrets.py` 生成 `secrets.local.h`，被 [`secrets.h`](../firmware/esp32/src/secrets.h) include |
 | 协议常量 | [`protocol/frame.h`](../firmware/esp32/src/protocol/frame.h) | PLAY/RECM/RPTF/ACK + packU16/U32 工具 |
-| Wi-Fi 客户端 | [`network/wifi_client.{h,cpp}`](../firmware/esp32/src/network/wifi_client.h) | STA 模式 + TCP 长连接，FreeRTOS 互斥锁，mDNS `esp32-voice.local` |
+| Wi-Fi 客户端 | [`network/wifi_client.{h,cpp}`](../firmware/esp32/src/network/wifi_client.h) | STA 模式 + TCP 长连接，FreeRTOS 互斥锁，mDNS `esp32-voice-ai.local` |
 | 麦克风采集 | [`audio/mic_adc.{h,cpp}`](../firmware/esp32/src/audio/mic_adc.h) | MAX9814 → ADC1 GPIO1，50k→16k 相位累加重采样 + LP + 增益 |
 | VAD | [`vad/energy_vad.{h,cpp}`](../firmware/esp32/src/vad/energy_vad.h) | RMS 阈值 + minVoiceMs + silenceMs 状态机 |
 | 上行分块 | [`audio/mic_uploader.{h,cpp}`](../firmware/esp32/src/audio/mic_uploader.h) | IDLE→REC→REPORT→IDLE，100 ms 一 chunk |
@@ -425,7 +425,7 @@ esp32-voice-ai/
 ### 10.1 Phase 1 — 主链路（已完成 2026-09-09）
 
 - [x] 固件接入 MAX9814 模拟 MEMS 麦克风（ADC1 GPIO1），后续可换 I2S 数字麦克风
-- [x] 固件 Wi-Fi STA + TCP Client（`wifi_client.cpp`），mDNS 广播 `esp32-voice.local`
+- [x] 固件 Wi-Fi STA + TCP Client（`wifi_client.cpp`），mDNS 广播 `esp32-voice-ai.local`
 - [x] 固件 `EnergyVad` 能量阈值 VAD + `MicUploader` 分块状态机
 - [x] PC `wifi_server.py` 接收上行 RECM/RPTF，触发 ASR → LLM → TTS
 - [x] PC `voice_pipeline.py` 抽出 ASR/LLM/TTS 流水线

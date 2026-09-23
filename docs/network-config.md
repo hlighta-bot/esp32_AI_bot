@@ -25,7 +25,7 @@ PIO pre-build 时由 [`scripts/gen_secrets.py`](../scripts/gen_secrets.py) 自�
   "wifi_pass": "your_wifi_password",
   "pc_host": "192.168.1.20",   // PC / aidlux 静态 IP
   "pc_port": 8888,
-  "esp32_hostname": "esp32-voice"
+  "esp32_hostname": "esp32-voice-ai"
 }
 ```
 
@@ -36,7 +36,7 @@ PIO pre-build 时由 [`scripts/gen_secrets.py`](../scripts/gen_secrets.py) 自�
 #define WIFI_PASS       "your_wifi_password"
 #define PC_HOST         "192.168.1.20"
 #define PC_PORT         8888
-#define ESP32_HOSTNAME  "esp32-voice"
+#define ESP32_HOSTNAME  "esp32-voice-ai"
 ```
 
 - 换 IP / 换 SSID → 只改 `config.local.json` → 重新 `pio run`（会自动 re-gen `secrets.local.h`）
@@ -47,7 +47,7 @@ PIO pre-build 时由 [`scripts/gen_secrets.py`](../scripts/gen_secrets.py) 自�
 ### 1.2 ESP32 广播自己的 IP
 
 - 已启用 mDNS：`MDNS.begin(ESP32_HOSTNAME)` + `MDNS.addService("tcp", "tcp", PC_PORT)`
-- PC 侧可以 `ping esp32-voice.local` / `nc esp32-voice.local 8888` 找到 ESP32
+- PC 侧可以 `ping esp32-voice-ai.local` / `nc esp32-voice-ai.local 8888` 找到 ESP32
 - **但**：ESP32 自己**没有**消费 PC 侧 mDNS 服务（PC 还没广播 `wifi_server` 服务）
 - 目前 mDNS 只是"ESP32 单向广播自己"，PC 侧还没反过来广播
 
@@ -155,7 +155,7 @@ prefs.end();
 
 **做法**：
 1. ESP32 内嵌一个 Web Server（`WebServer` 或 `ESPAsyncWebServer`）
-2. 通过 mDNS 广播：`http://esp32-voice.local`
+2. 通过 mDNS 广播：`http://esp32-voice-ai.local`
 3. 浏览器打开这个地址 → Web 表单填写：
    - Wi-Fi SSID / 密码
    - PC Host IP / 端口
@@ -173,14 +173,14 @@ lib_deps:
 
 **mDNS 广播 HTTP 服务**：
 ```cpp
-MDNS.begin("esp32-voice");
+MDNS.begin("esp32-voice-ai");
 MDNS.addService("http", "tcp", 80);   // 现在广播的是 Web UI 端口
 ```
 
 | 项 | 说明 |
 |---|---|
 | 代码改动 | 约 300–500 行（Web 框架 + HTML 模板 + NVS 读写 + 重启） |
-| 换 IP | 浏览器打开 `http://esp32-voice.local` → 表单改 → 保存 |
+| 换 IP | 浏览器打开 `http://esp32-voice-ai.local` → 表单改 → 保存 |
 | 换 SSID | 同上，同一个页面 |
 | 优点 | **用户友好**，标准做法，跨设备通用 |
 | 缺点 | 需要引入 Web 库（体积增加 ~150 KB flash）；ESP32 同时跑 Web Server + TCP Client 8888 端口资源占用增加 |
@@ -221,7 +221,7 @@ MDNS.addService("http", "tcp", 80);   // 现在广播的是 Web UI 端口
 - PC Server 想 OTA 升级固件
 - aidlux 手机作为 Server 时，也需要知道 ESP32 在哪
 
-**当前已有的基础设施**：ESP32 侧已启用 mDNS，广播 `esp32-voice.local` 和 `tcp:8888`。
+**当前已有的基础设施**：ESP32 侧已启用 mDNS，广播 `esp32-voice-ai.local` 和 `tcp:8888`。
 
 **PC 侧消费 mDNS 方案**：
 
@@ -236,7 +236,7 @@ services = br.browse("_tcp._tcp.local.")   # 太宽
 # 或者监听特定类型
 
 # 方案 3：直接解析 .local
-socket.getaddrinfo("esp32-voice.local", 8888)
+socket.getaddrinfo("esp32-voice-ai.local", 8888)
 ```
 
 **注意**：`zeroconf` 库**不是标准库**，会破坏 aidlux 迁移承诺。
@@ -244,7 +244,7 @@ socket.getaddrinfo("esp32-voice.local", 8888)
 ```python
 # 只用 socket 标准库：直接解析 .local 主机名
 # 前提：PC 侧装了 avahi-daemon（提供 mDNS 解析）
-addr = socket.getaddrinfo("esp32-voice.local", 8888)[0][4][0]
+addr = socket.getaddrinfo("esp32-voice-ai.local", 8888)[0][4][0]
 ```
 
 ---
@@ -317,12 +317,12 @@ addr = socket.getaddrinfo("esp32-voice.local", 8888)[0][4][0]
 - **固件侧**：Web UI + SoftAP（方案 D + E）
   - `ESPAsyncWebServer` + 简 HTML 表单
   - 出厂默认开 SoftAP 直到 NVS 有 SSID
-  - 用户浏览器打开 `http://esp32-voice.local` 配网
+  - 用户浏览器打开 `http://esp32-voice-ai.local` 配网
 - **代价**：引入第三方 Web 库，固件体积 +150 KB，代码复杂度上升
 - **aidlux 影响**：Web UI 用 HTML + JSON，与 Python 端解耦，不影响 aidlux
 
 ### Phase 3.5（可选，反向发现）
-- **PC 侧**：`wifi_server.py` 启动时解析 `esp32-voice.local` 显示设备状态
+- **PC 侧**：`wifi_server.py` 启动时解析 `esp32-voice-ai.local` 显示设备状态
 - **限制**：依赖 PC 端 mDNS 解析（`avahi-daemon` 或零 conf）
 - **aidlux 兼容**：只用 `socket.getaddrinfo`，保持 stdlib
 
@@ -360,7 +360,7 @@ WSL2 有默认 NAT 和可选桥接两种模式，mDNS 通不通取决于模式�
 | TCP 直连 WSL2 IP（`172.20.x.x`） | ✅ **仅 Windows 侧可**（Windows → WSL 走内核路由，通） |
 | **ESP32 → WSL2 IP（`172.20.x.x`）** | ❌ **不通**（WSL 私有网段不在路由器路由表里） |
 | **ESP32 → Windows 宿主 IP** | ⚠️ 有监听则通；默认 Wi-Fi Server 在 WSL 内，Windows 侧无监听 |
-| WSL2 里 `ping esp32-voice.local` | ❌ 不通（组播到不了 WSL2 虚拟网卡） |
+| WSL2 里 `ping esp32-voice-ai.local` | ❌ 不通（组播到不了 WSL2 虚拟网卡） |
 | WSL2 里 avahi 广播 | ❌ ESP32 收不到 |
 | WSL2 IP 稳定性 | ❌ 每次启动可能变 |
 
@@ -432,7 +432,7 @@ Test-NetConnection 192.168.0.3 -Port 8888
 | 项 | 效果 |
 |---|---|
 | TCP 直连 WSL2 IP（`192.168.1.x`） | ✅ 通 |
-| WSL2 里 `ping esp32-voice.local` | ⚠️ 取决于网卡驱动的组播支持，多数可行 |
+| WSL2 里 `ping esp32-voice-ai.local` | ⚠️ 取决于网卡驱动的组播支持，多数可行 |
 | WSL2 里 avahi 广播 → ESP32 收 | ⚠️ 同上 |
 | WSL2 IP 稳定性 | ✅ 通过 DHCP 保留固定 |
 
@@ -491,7 +491,7 @@ avahi-browse -a | grep my-pc.local
 | 未实现 | 方案 C：NVS + Serial 命令 | 新增 `net_config.h/.cpp` + `main.cpp` 命令解析 |
 | 未实现 | 方案 D：Web UI | 新增 `net_web.{h,cpp}` + `lib_deps: ESPAsyncWebServer` |
 | 未实现 | 方案 E：SoftAP 配网 | 新增 `net_softap.{h,cpp}` + 状态机 |
-| 未实现 | 反向发现 | PC 端 `zeroconf` 或 `socket.getaddrinfo("esp32-voice.local")` |
+| 未实现 | 反向发现 | PC 端 `zeroconf` 或 `socket.getaddrinfo("esp32-voice-ai.local")` |
 
 ---
 
@@ -503,7 +503,7 @@ avahi-browse -a | grep my-pc.local
 | 手机 mDNS 支持 | iOS 支持 mDNS（Bonjour 是系统级）；Android 需要 App 层实现，aidlux 环境待验证 |
 | 用户如何发现 aidlux IP | 手机连上 Wi-Fi 后，`ifconfig` 看 IP；或 aidlux 内嵌 mDNS 广播自己 |
 | 推荐方案 | 让 aidlux 也广播自己为 `aidlux-voice.local`，ESP32 侧 `config.local.json` 里 `pc_host = "aidlux-voice.local"` |
-| 或反向 | ESP32 已经广播 `esp32-voice.local`，aidlux 侧启动时 `socket.getaddrinfo("esp32-voice.local")` 找到 ESP32，然后 Server 主动去 listen，等 ESP32 连过来 |
+| 或反向 | ESP32 已经广播 `esp32-voice-ai.local`，aidlux 侧启动时 `socket.getaddrinfo("esp32-voice-ai.local")` 找到 ESP32，然后 Server 主动去 listen，等 ESP32 连过来 |
 
 **核心洞察**：无论迁到哪个设备，只要**双方都用 mDNS 广播 + 主机名解析**，IP 变化就不用改配置。
 
