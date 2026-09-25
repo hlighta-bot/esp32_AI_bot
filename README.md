@@ -118,6 +118,7 @@ SYSTEM_PROMPT="只用一句话回答。" python voice_chat.py --engine sensenova
 | [`docs/STEP_12_2_A_FEASIBILITY.md`](./docs/STEP_12_2_A_FEASIBILITY.md) | Step 12-2-A 可行性分析（QQVGA RGB565 + `frame2jpg_cb` + PersonDetector） |
 | [`docs/test-2026-09-16-step12-1-cam-base.md`](./docs/test-2026-09-16-step12-1-cam-base.md) | Step 12-1 摄像头基础测试用例（`/`、`/capture`、`/stream`） |
 | [`docs/test-2026-09-19-step12-2-a-person-detect.md`](./docs/test-2026-09-19-step12-2-a-person-detect.md) | Step 12-2-A 本地人物检测测试用例（YCbCr 肤色 + 连通域 + Overlay） |
+| [`docs/MILESTONE_1_VISION_WELCOME.md`](./docs/MILESTONE_1_VISION_WELCOME.md) | **Milestone 1 · 视觉 → 迎宾语音闭环（已验收）**：端到端流程、代码路径、关键技术决策、10 条开发原则、Phase 2-7 计划 |
 
 ---
 
@@ -269,23 +270,28 @@ Server 只用 Python 标准库、无 asyncio、阻塞 I/O，可直接迁移到�
 
 ### 当前路线速览
 
+* **Milestone 1 · 视觉 → 迎宾语音闭环**（✅ **已验收 2026-09-23**）：CAM 看到人 → raw UDP mDNS → HTTP POST → S3 迎宾。详见 [`docs/MILESTONE_1_VISION_WELCOME.md`](./docs/MILESTONE_1_VISION_WELCOME.md)。
 * **Phase 1 · 目标期主链路**（✅ 已完成 2026-09-09）：Energy VAD + Wi-Fi 双向 + Web 配置基础版
-* **Phase 2 · 语音交互质量与稳定性优化**（🟡 进行中）：Energy VAD 真机调参 + 更强 VAD 评估 + 流式 TTS + TCP 稳定性 + 端到端延迟压测
-* **Phase 3 · Wake Word + TinyML**（待做）：Wake Word ≠ VAD；Wake Word 判断"是否被唤醒"，VAD 判断"用户什么时候开始 / 结束讲话"
-* **Phase 4 · 低功耗 + 电池 + 独立设备**（待做）
+* **Phase 2 · 舵机控制（Pan/Tilt）**（🔜 计划中）：MG90S 单舵机 PWM → `/robot/event` 增加 `pan`/`tilt` 字段
+* **Phase 3 · 唤醒词（Hi，大聪明）**（🔜 计划中）：VAD + Whisper 匹配，不部署专用 Wake Word 模型
+* **Phase 4 · Audio Pre-Roll**（🔜 计划中）：~300 ms 环形缓冲，解决唤醒词尾字被 VAD 截断
+* **Phase 5 · 麦克风调参**（🔜 计划中）：MAX9814 增益、ADC 削波检测、VAD 阈值、cooldown
+* **Phase 6 · ASR/LLM 错误诊断**（🔜 计划中）：`[ASR]`/`[LLM]`/`[TTS]`/`[PLAY]`/`[WW]` 分层日志
+* **Phase 7 · 多语言**（🔜 计划中）：Whisper 语言自动检测 + TTS 语音路由
 * **Step 12 视觉支线**（🟡 并行推进）：详见下节
 * **Canonical hostname**：`esp32-voice-ai`（mDNS `.local` 解析用）
 
-后续路线与 Architecture Baseline（2026-09-21）见 [`docs/roadmap.md`](./docs/roadmap.md)。
+后续路线与 Architecture Baseline（2026-09-21）见 [`docs/roadmap.md`](./docs/roadmap.md)；Milestone 1 验收归档与 Phase 2-7 详细计划见 [`docs/MILESTONE_1_VISION_WELCOME.md`](./docs/MILESTONE_1_VISION_WELCOME.md)。
 
 ---
 
-## 支线：Step 12 视觉 + Pan/Tilt（进行中）
+## 支线：Step 12 视觉 + Pan/Tilt（Milestone 1 已验收）
 
 与语音主链路**并行**推进，物理上是**独立的第二块 ESP32**（AI-Thinker ESP32-CAM + OV2640，经典 ESP32 芯片，非 ESP32-S3）。**CAM → S3 / PC 视觉数据通信走 Wi-Fi 优先，UART 保留为低延迟 / 备用方案**（两块设备都是 Wi-Fi 节点，均支持 hostname + mDNS）。
 
 - **Step 12-1 · 摄像头基础**（2026-09-16，已通过）：`firmware/esp32-cam` env，Web 首页 + `/capture` + `/stream` MJPEG。测试用例见 [`docs/test-2026-09-16-step12-1-cam-base.md`](./docs/test-2026-09-16-step12-1-cam-base.md)。
-- **Step 12-2 · 本地人物区域候选检测**（2026-09-18 起）：切换 `PIXFORMAT_RGB565` + `FRAMESIZE_QQVGA`（160×120），用 YCbCr 肤色阈值 + 8-邻域 BFS 连通域做低资源**人物区域候选检测**（**不是 Face Detection，也不是 Face Recognition**），检测结果直接 overlay 到 JPEG。可行性分析与测试用例见 [`docs/STEP_12_2_A_FEASIBILITY.md`](./docs/STEP_12_2_A_FEASIBILITY.md) / [`docs/test-2026-09-19-step12-2-a-person-detect.md`](./docs/test-2026-09-19-step12-2-a-person-detect.md)。
+- **Step 12-2 · 本地人物区域候选检测**（2026-09-18 起，已并入 Milestone 1）：切换 `PIXFORMAT_RGB565` + `FRAMESIZE_QQVGA`（160×120），用 TFLite Person/NoPerson 推理 + 3 帧去抖做低资源**人物区域候选检测**（**不是 Face Detection，也不是 Face Recognition**）。可行性分析与测试用例见 [`docs/STEP_12_2_A_FEASIBILITY.md`](./docs/STEP_12_2_A_FEASIBILITY.md) / [`docs/test-2026-09-19-step12-2-a-person-detect.md`](./docs/test-2026-09-19-step12-2-a-person-detect.md)。
+- **Step 12-3 · CAM → S3 通信**（✅ **Milestone 1 已验收 2026-09-23**）：CAM 主动通过 **raw UDP mDNS** 解析 `esp32-voice-ai.local` → HTTP POST `/robot/event` → S3 迎宾播放。详见 [`docs/MILESTONE_1_VISION_WELCOME.md`](./docs/MILESTONE_1_VISION_WELCOME.md)。
 - 硬件调查与总计划见 [`docs/STEP_12_VISION_SERVO_PLAN.md`](./docs/STEP_12_VISION_SERVO_PLAN.md)。
 - **Vision 演进**（见 [`docs/roadmap.md`](./docs/roadmap.md) §55）：人物区域候选检测（S12-2）→ Face Detection（S12-4）→ Face Recognition（S12-5，架构决策点）。
 - **明确不做**：YOLO / TFLite / 神经网络 / 云端视觉（受经典 ESP32 320 KB SRAM、无 PSRAM 的硬件上限限制）；Face Recognition 属架构决策点，非近期目标。

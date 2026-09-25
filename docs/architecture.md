@@ -460,6 +460,21 @@ esp32-voice-ai/
 
 - [ ] 落实 [`mobile/android/`](../mobile/android/README.md) 客户端（当前仅有占位 README）
 
+### 10.7 Milestone 1 · 视觉 → 迎宾语音闭环（已完成 2026-09-23）
+
+跨设备端到端自动化闭环：ESP32-CAM 主动检测到人后，通过 raw UDP mDNS 找到 ESP32-S3，用 HTTP POST 触发迎宾播放。
+
+- [x] ESP32-CAM TFLite Person/NoPerson 推理 + 3 帧去抖（`detection_state.cpp`）
+- [x] CAM 主动通过 raw UDP mDNS 解析 `esp32-voice-ai.local`（`robot_event.cpp::queryMdnsARecord`）
+- [x] DNS 应答解析：`(classV & 0x7FFF) == 0x0001` 匹配 mDNS cache-flush bit（`0x8001`）
+- [x] UDP socket 顺序：tx → stop → rx（避免 lwIP bind 冲突）
+- [x] HTTP POST `/robot/event` 返回 HTTP 200
+- [x] ESP32-S3 `robot_event_server` 状态机：`NOT_PRESENT → PRESENT → COOLDOWN`
+- [x] 60s IP 缓存（`ROBOT_MDNS_TIMEOUT_MS=2000`）
+- [x] 播放"你好！"PCM 音频（`hi_hello.h` 内嵌资源）
+
+关键代码路径与故障复盘见 [`MILESTONE_1_VISION_WELCOME.md`](./MILESTONE_1_VISION_WELCOME.md) §3-4。
+
 ---
 
 ## 11. 版本
@@ -469,3 +484,4 @@ esp32-voice-ai/
 | v1   | 2026-09-08 | 首版，从 README 与源码抽取 |
 | v2   | 2026-09-09 | Phase 1 主链路（Wi-Fi/TCP + MAX9814 + RECM/RPTF + VAD）落地；架构图、数据流、模块表、目录结构全面更新；新增 aidlux 兼容性小节 |
 | v3   | 2026-09-09 | §10.5 补充网络配置策略链接 → [`network-config.md`](./network-config.md) |
+| v4   | 2026-09-23 | §10.7 新增 Milestone 1 · 视觉 → 迎宾语音闭环归档，指向 [`MILESTONE_1_VISION_WELCOME.md`](./MILESTONE_1_VISION_WELCOME.md) |

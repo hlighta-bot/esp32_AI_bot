@@ -4,12 +4,16 @@
 
 ---
 
-## Architecture Baseline · 2026-09-21
+## Architecture Baseline · 2026-09-21（Milestone 1 已验收 2026-09-23）
 
-本文档自 2026-09-21 起冻结为**架构基线（Architecture Baseline）**。冻结内容：
+本文档自 2026-09-21 起冻结为**架构基线（Architecture Baseline）**，2026-09-23 **Milestone 1（视觉 → 迎宾语音闭环）** 已验收完成。
 
-* **主线 · ESP32-S3 语音**：Phase 1（✅ 已完成）→ Phase 2（🟡 进行中：语音交互质量与稳定性优化）→ Phase 3（待做：Wake Word + TinyML）→ Phase 4（待做：低功耗 + 电池 + 独立设备）
-* **视觉支线 · ESP32-CAM**：S12-1（✅ 摄像头基础）→ S12-2（🟡 人物区域候选检测）→ S12-3（待做：视觉数据通信，Wi-Fi 优先 / UART 备用）→ S12-4（待做：Face Detection）→ S12-5（待做：Face Recognition，架构决策点）→ S12-6（待做：Pan/Tilt）→ S12-7（待做：视觉 + 语音对话闭环）
+**Milestone 1 验收要点**：ESP32-CAM 通过 TFLite 检测到人 → raw UDP mDNS 解析 `esp32-voice-ai.local` → HTTP POST `/robot/event` → ESP32-S3 迎宾播放"你好！"。详见 [`MILESTONE_1_VISION_WELCOME.md`](./MILESTONE_1_VISION_WELCOME.md)。
+
+冻结内容：
+
+* **主线 · ESP32-S3 语音**：Phase 1（✅ 已完成 2026-09-09）→ Phase 2 舵机控制（🔜）→ Phase 3 唤醒词（🔜）→ Phase 4 Audio Pre-Roll（🔜）→ Phase 5 麦克风调参（🔜）→ Phase 6 ASR/LLM 诊断（🔜）→ Phase 7 多语言（🔜）→ 低功耗 + 电池 + 独立设备（长期）
+* **视觉支线 · ESP32-CAM**：S12-1（✅ 摄像头基础）→ S12-2（✅ 人物区域候选检测）→ S12-3（✅ **CAM → S3 通信，Milestone 1**）→ S12-4（待做：Face Detection）→ S12-5（待做：Face Recognition，架构决策点）→ S12-6（待做：Pan/Tilt）→ S12-7（待做：视觉 + 语音对话闭环）
 * **动态 IP / 设备发现**：hostname + mDNS（`esp32-voice-ai` / `esp32-cam` / PC），手工地址作为 fallback
 * **Web 配置系统**：基础版已完成（SoftAP / 192.168.4.1 / NVS / Wi-Fi / PC host / PC port / VAD 参数 / reboot / reset / factory-reset），未来扩展为 Dashboard / OTA / 摄像头管理 / 人脸管理 / 日志
 * **Wake Word 与 VAD 职责边界**：Wake Word 判断"是否被唤醒"；VAD 判断"用户什么时候开始 / 结束讲话"
@@ -366,6 +370,8 @@ PC 扬声器
 | 20 | 独立 Voice AI | 最终目标 |
 | 21 | aidlux 迁移（Server → Android slim Python） | 迁移预留（见 [`architecture.md`](./architecture.md#105-aidlux-迁移预留)） |
 
+> **注**：Milestone 1 之后，Phase 2 从"语音质量优化总称"进一步拆分为 Phase 2-7（舵机控制 / 唤醒词 / Audio Pre-Roll / 麦克风调参 / ASR-LLM 诊断 / 多语言），详见 [`MILESTONE_1_VISION_WELCOME.md`](./MILESTONE_1_VISION_WELCOME.md) §6。上表 13-20 保留，作为原始粗粒度阶段划分的历史参考。
+
 ## 视觉支线 · Step 12（ESP32-CAM，独立设备）
 
 Step 12 是**独立的第二块 ESP32**（ESP32-CAM + OV2640）。**Vision 推理位置是未来架构决策点**（可能在 ESP32-S3、PC 或其他边缘设备），当前未定；ESP32-CAM 只负责通过 Wi-Fi 把画面传出去，**不背 Face Recognition**。
@@ -379,8 +385,8 @@ Step 12 是**独立的第二块 ESP32**（ESP32-CAM + OV2640）。**Vision 推�
 | 阶段 | 功能 | 状态 |
 | -- | ------------------ | -------------- |
 | S12-1 | ESP32-CAM 摄像头基础（Web 首页 + `/capture` + `/stream`） | 已完成（2026-09-16，测试见 [`test-2026-09-16-step12-1-cam-base.md`](./test-2026-09-16-step12-1-cam-base.md)） |
-| S12-2 | **人物区域候选检测**（当前实现：YCbCr 肤色 + 8-邻域 BFS 连通域 + Overlay，**不是人脸检测**） | 进行中（2026-09-18 起；可行性见 [`STEP_12_2_A_FEASIBILITY.md`](./STEP_12_2_A_FEASIBILITY.md)，测试见 [`test-2026-09-19-step12-2-a-person-detect.md`](./test-2026-09-19-step12-2-a-person-detect.md)） |
-| S12-3 | **ESP32-CAM → ESP32-S3 / PC 视觉数据通信**：**优先 Wi-Fi 网络协议**（JSON/HTTP/WS 皆可），UART 保留为低延迟 / 备用方案；两端都是 Wi-Fi 节点，均支持 hostname + mDNS | 待做（见 [`STEP_12_VISION_SERVO_PLAN.md`](./STEP_12_VISION_SERVO_PLAN.md)；原 UART-first 计划需重评估） |
+| S12-2 | **人物区域候选检测**（TFLite Person/NoPerson 推理 + 3 帧去抖，**不是人脸检测**） | 已完成（2026-09-18 起；可行性见 [`STEP_12_2_A_FEASIBILITY.md`](./STEP_12_2_A_FEASIBILITY.md)，测试见 [`test-2026-09-19-step12-2-a-person-detect.md`](./test-2026-09-19-step12-2-a-person-detect.md)；已并入 Milestone 1） |
+| S12-3 | **ESP32-CAM → ESP32-S3 视觉数据通信**：**Wi-Fi 网络协议（HTTP POST + raw UDP mDNS）已验收**，UART 保留为低延迟 / 备用方案。**Milestone 1 视觉 → 迎宾语音闭环已达成**（2026-09-23，详见 [`MILESTONE_1_VISION_WELCOME.md`](./MILESTONE_1_VISION_WELCOME.md)） | 已完成（Milestone 1，2026-09-23） |
 | S12-4 | **Face Detection**（真正的人脸框检测，替代或补充 S12-2 的肤色区域候选） | 待做 |
 | S12-5 | **Face Recognition**（人脸识别，需明确隐私 / 合规边界） | 待做（架构决策点，非近期目标） |
 | S12-6 | ESP32-S3 Pan/Tilt 舵机（GPIO 4 / 5，接收 S12-3 坐标后追踪） | 待做 |
@@ -703,22 +709,35 @@ I2S 输出 → MAX98357A → 扬声器
 
 # 60. 项目下一步
 
-Phase 1 主链路已跑通。**主线（语音）与支线（Step 12 视觉 + Pan/Tilt）并行推进，互不阻塞**。
+**Phase 1 主链路**（2026-09-09）与 **Milestone 1 视觉 → 迎宾语音闭环**（2026-09-23）已验收。**主线（语音）与支线（Step 12 视觉 + Pan/Tilt）并行推进，互不阻塞**。
 
-## 主线 · 语音（Phase 1-4）
+Milestone 1 详细验收归档与后续 Phase 2-7 计划见 [`MILESTONE_1_VISION_WELCOME.md`](./MILESTONE_1_VISION_WELCOME.md)。
+
+## 主线 · 语音（Phase 1-7）
 
 ```text
 Phase 1 ✅（已完成 2026-09-09）
    Energy VAD + Wi-Fi 双向 + Web 配置（基础）
       ↓
-Phase 2 🟡（进行中）
-   Energy VAD 真机调参 + 更强 VAD 评估 + 流式 TTS + TCP 稳定性 + 延迟压测
+Phase 2 🔜 舵机控制（Pan/Tilt）
+   MG90S 单舵机 PWM → /robot/event 增加 pan/tilt 字段
       ↓
-Phase 3 🟡（进行中）
-   Wake Word（对话入口，不等于 VAD）+ TinyML 模型
+Phase 3 🔜 唤醒词（Hi，大聪明）
+   VAD + Whisper 匹配（不做专用 Wake Word 模型）
       ↓
-Phase 4 🟡
-   电池供电 / 低功耗 → 独立 Wi-Fi Voice AI Device
+Phase 4 🔜 Audio Pre-Roll
+   ~300 ms 环形缓冲，解决唤醒词尾字被 VAD 截断
+      ↓
+Phase 5 🔜 麦克风调参
+   MAX9814 增益、ADC 削波检测、VAD 阈值、cooldown
+      ↓
+Phase 6 🔜 ASR/LLM 错误诊断
+   [ASR]/[LLM]/[TTS]/[PLAY]/[WW] 分层日志
+      ↓
+Phase 7 🔜 多语言
+   Whisper 语言自动检测 + TTS 语音路由
+      ↓
+长期    🔜 电池供电 / 低功耗 → 独立 Wi-Fi Voice AI Device
 ```
 
 ## 视觉支线 · Step 12（ESP32-CAM，独立设备）
@@ -726,17 +745,17 @@ Phase 4 🟡
 ```text
 S12-1 ✅ 摄像头基础（Web + /capture + /stream，2026-09-16）
       ↓
-S12-2 🟡 人物区域候选检测（当前：YCbCr 肤色 + 8-邻域 BFS，不是人脸检测）
+S12-2 ✅ 人物区域候选检测（TFLite Person/NoPerson + 3 帧去抖，不是人脸检测）
       ↓
-S12-3 🟡 ESP32-CAM → ESP32-S3 / PC 视觉数据通信（Wi-Fi 优先，UART 备用）
+S12-3 ✅ CAM → S3 通信（raw UDP mDNS + HTTP POST /robot/event，Milestone 1，2026-09-23）
       ↓
-S12-4 🟡 Face Detection（真正的人脸框检测）
+S12-4 🔜 Face Detection（真正的人脸框检测）
       ↓
-S12-5 🟡 Face Recognition（人脸识别，架构决策点，涉及隐私与合规）
+S12-5 🔜 Face Recognition（人脸识别，架构决策点，涉及隐私与合规）
       ↓
-S12-6 🟡 ESP32-S3 Pan/Tilt 舵机（接收坐标后追踪）
+S12-6 🔜 ESP32-S3 Pan/Tilt 舵机（接收坐标后追踪；并入主线 Phase 2）
       ↓
-S12-7 🟡 视觉 + 语音对话闭环
+S12-7 🔜 视觉 + 语音对话闭环
 ```
 
 ## 跨线基础设施（贯穿全程）
