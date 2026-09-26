@@ -78,7 +78,7 @@ WHISPER_CLI = (
 
 WHISPER_MODEL = (
     "/home/hqb/ai-apps/whisper.cpp/"
-    "models/ggml-tiny.bin"
+    "models/ggml-base.bin"
 )
 
 WHISPER_LIB = (
@@ -316,6 +316,15 @@ REC_FLAG_VAD_TRIGGER = 0x0002  # bit1: VAD 触发点
 ASR_TIMEOUT = 120
 # Whisper 识别超时 (秒)
 
+# 送入 ASR 前的轻量预处理参数。
+# 经验值来自 support/batch_wave_stats.csv + 人工标注：
+# - 250~300 RMS 可过滤大部分“背景全是杂音”的无效录音
+# - 6 秒上限可避免超长噪声段放大 Whisper 幻觉
+
+ASR_PRETRIM_MIN_RMS = 260
+
+ASR_PRETRIM_MAX_DURATION_SEC = 6.0
+
 
 # ============================================================
 # LLM 超时配置
@@ -339,3 +348,59 @@ SILENCE_DURATION = 2.0
 SILENCE_THRESHOLD = -45.0
 
 SILENCE_POLL_INTERVAL = 0.1
+
+
+# ============================================================
+# 会话控制配置 (P1 + P2)
+# ============================================================
+#
+# 本节配置属于"会话控制层"，不依赖任何 LLM。
+# 切换 LLM Provider 时无需修改此节。
+#
+# 处理流程：
+#
+#   ASR (Whisper)
+#       ↓
+#   CommandRouter.classify(text)
+#       ↓
+#   ┌─────────────────────────────────────────────┐
+#   │ WAKE_WORD  → 激活，回复确认语（不经过 LLM）  │
+#   │ INTERRUPT  → 停止 TTS（不经过 LLM）          │
+#   │ USER_TEXT  → 交给 LLM Router                 │
+#   └─────────────────────────────────────────────┘
+# ============================================================
+
+# 唤醒词
+#
+# 用户说出唤醒词后设备进入对话模式。
+#
+# 匹配方式（严格）：
+#   - "你好" 单独出现：触发
+#   - "你好" + 标点（。！？!?，、~～）：触发
+#   - "你好" + 少量语气词（啊/呀/呢/吧/哦）+ 可选标点：触发
+#   - "你好" 后面出现任何实质性内容（"你好，帮我查天气"、
+#     "你好帮我查天气"等）：不触发，走 USER_TEXT
+#
+# 详细规则见 command_router.py::_is_wake_word()。
+WAKE_WORD = "你好"
+
+# 唤醒回复语
+WAKE_WORD_REPLY = "我在，请说"
+
+# 打断词列表
+#
+# 用户在 AI 播放 TTS 时说出包含这些词的语句，
+# 立即停止 TTS 播放。
+#
+# 匹配方式：包含匹配
+# 注意：打断词检测在唤醒词之后，避免误判。
+#
+# ESP32 端同时有能量检测（INTERRUPT_RMS_THRESHOLD），
+# 即使 ASR 未识别出文字，大声说话也能触发打断。
+INTERRUPT_WORDS = [
+    "停",
+    "停止",
+    "别说了",
+    "等一下",
+    "闭嘴",
+]

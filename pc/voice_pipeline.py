@@ -16,8 +16,9 @@ aidlux 兼容性：
 """
 
 import io
-import wave
+import math
 import struct
+import wave
 
 from asr import WhisperASR
 from llm import LLMRouter
@@ -62,6 +63,88 @@ def wav_duration_seconds(wav_bytes):
         return 0.0
 
 
+def _read_wav_samples(wav_bytes, sample_rate=16000, channels=1):
+    """读取 WAV 头与 PCM，返回 (frames, raw, nframes)。"""
+    with io.BytesIO(wav_bytes) as bio:
+        with wave.open(bio, "rb") as w:
+            frames = w.getnframes()
+            if frames <= 0 or w.getsampwidth() != 2:
+                return None
+            if channels > 0 and w.getnchannels() != channels:
+                return None
+            raw = w.readframes(frames)
+    return raw, frames, int(w.getframerate() or sample_rate)
+
+
+def _write_wav(samples, sample_rate=16000, channels=1):
+    """把采样点重新打包为 WAV bytes。"""
+    if not samples:
+        return None
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        w.writeframes(struct.pack("<" + "h" * len(samples), *samples))
+    return buf.getvalue()
+
+
+def _rms(samples):
+    """计算整段样本的 RMS。"""
+    if not samples:
+        return 0.0
+    return math.sqrt(sum(s * s for s in samples) / len(samples))
+
+
+def _trim_wav_for_asr(wav_bytes):
+    """ASR 前轻量预处理：去掉低能量静音并限制最大长度。
+
+    经验规则来自 pc/support/asr_debug_wave_stats.csv 和人工标注：
+    - 过低 RMS 的录音大多对应“背景全是杂音，没有说话”
+    - 超长录音更容易诱发 Whisper 幻觉/重复
+    """
+    floor_rms = getattr(config, "ASR_PRETRIM_MIN_RMS", 260)
+    max_duration_sec = getattr(config, "ASR_PRETRIM_MAX_DURATION_SEC", 6.0)
+
+    parsed = _read_wav_samples(wav_bytes)
+    if parsed is None:
+        return None
+    raw, nframes, sample_rate = parsed
+    if raw:
+        samples = list(struct.unpack("<" + "h" * (len(raw) // 2), raw))
+    else:
+        samples = []
+
+    # 只保留有能量片段，同时避免把整段无效音频送进 ASR。
+    seg_sec = 0.05
+    seg_samples = max(1, int(sample_rate * seg_sec))
+    seg_rms = []
+    for i in range(0, len(samples), seg_samples):
+        seg = samples[i:i + seg_samples]
+        if seg:
+            seg_rms.append((i, _rms(seg)))
+
+    keep_start = None
+    for idx, value in seg_rms:
+        if value >= floor_rms:
+            keep_start = idx
+            break
+
+    if keep_start is None:
+        return None
+
+    keep_end = len(samples)
+    for idx, value in reversed(seg_rms):
+        if value >= floor_rms:
+            keep_end = min(len(samples), idx + seg_samples)
+            break
+
+    trimmed = samples[keep_start:keep_end]
+    if max_duration_sec and len(trimmed) > int(sample_rate * max_duration_sec):
+        trimmed = trimmed[: int(sample_rate * max_duration_sec)]
+    return _write_wav(trimmed, sample_rate=sample_rate, channels=1)
+
+
 # ============================================================
 # 核心流水线
 # ============================================================
@@ -87,7 +170,10 @@ def _get_tts():
 def transcribe(wav_bytes):
     """WAV → 文本；失败返回 None"""
     try:
-        return _get_asr().transcribe_wav(wav_bytes)
+        cleaned = _trim_wav_for_asr(wav_bytes)
+        if cleaned is None:
+            return None
+        return _get_asr().transcribe_wav(cleaned)
     except Exception as e:
         print(f"[pipeline] ASR failed: {e}")
         return None

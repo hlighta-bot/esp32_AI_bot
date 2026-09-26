@@ -31,6 +31,49 @@
 // ============================================================
 
 #define UPLOAD_ACCUM_SAMPLES 1600
+#define VAD_PRE_ROLL_MS 250
+#define VAD_PRE_ROLL_SAMPLES ((MIC_TARGET_SAMPLE_HZ * VAD_PRE_ROLL_MS) / 1000)
+
+static int16_t preRollRing[VAD_PRE_ROLL_SAMPLES];
+static size_t preRollHead = 0;
+static size_t preRollCount = 0;
+
+static void pushPreRoll(const int16_t *samples, size_t n)
+{
+    for (size_t i = 0; i < n; ++i) {
+        preRollRing[preRollHead] = samples[i];
+        preRollHead = (preRollHead + 1) % VAD_PRE_ROLL_SAMPLES;
+        if (preRollCount < VAD_PRE_ROLL_SAMPLES) {
+            preRollCount++;
+        }
+    }
+}
+
+static void fillPreRollSlice(
+    int16_t *out,
+    size_t offset,
+    size_t count)
+{
+    size_t start =
+        (preRollCount == VAD_PRE_ROLL_SAMPLES)
+            ? preRollHead
+            : 0;
+
+    start += offset;
+    start %= VAD_PRE_ROLL_SAMPLES;
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        out[i] =
+            preRollRing[(start + i) % VAD_PRE_ROLL_SAMPLES];
+    }
+}
+
+static void clearPreRoll()
+{
+    preRollHead = 0;
+    preRollCount = 0;
+}
 
 
 // ============================================================
@@ -421,6 +464,7 @@ void MicUploader::run()
         // 下一轮实际 sample 到来后，
         // 正常 update() 会重新进入判断。
         // ----------------------------------------------------
+        clearPreRoll();
 
         Serial.println(
             "[mic] cooldown done, listening again"
@@ -499,12 +543,11 @@ void MicUploader::run()
 
         case VAD_IDLE:
         {
+            pushPreRoll(samples, n);
+
             if (!_sessionActive) {
-
                 uploadCount = 0;
-
                 _firstInSession = true;
-
                 _sessionBytes = 0;
             }
 
@@ -519,8 +562,56 @@ void MicUploader::run()
         case VAD_SPEAK:
         {
             // ------------------------------------------------
-            // 新 session
+            // 新 session：先把 pre-roll 一次性排空
             // ------------------------------------------------
+
+            if (!_sessionActive && preRollCount > 0 && uploadCount == 0)
+            {
+                size_t offset = 0;
+
+                while (offset < preRollCount)
+                {
+                    size_t chunkSamples =
+                        (preRollCount - offset < UPLOAD_ACCUM_SAMPLES)
+                            ? (preRollCount - offset)
+                            : UPLOAD_ACCUM_SAMPLES;
+
+                    fillPreRollSlice(
+                        uploadBuffer,
+                        offset,
+                        chunkSamples
+                    );
+
+                    uint16_t flags = 0;
+
+                    if (_firstInSession)
+                    {
+                        flags |=
+                            REC_FLAG_FIRST |
+                            REC_FLAG_VAD_TRIGGER;
+
+                        _firstInSession = false;
+                    }
+
+                    bool ok =
+                        sendRecChunk(
+                            uploadBuffer,
+                            chunkSamples,
+                            flags
+                        );
+
+                    if (ok)
+                    {
+                        _sessionBytes +=
+                            chunkSamples *
+                            sizeof(int16_t);
+                    }
+
+                    offset += chunkSamples;
+                }
+
+                clearPreRoll();
+            }
 
             _sessionActive = true;
 

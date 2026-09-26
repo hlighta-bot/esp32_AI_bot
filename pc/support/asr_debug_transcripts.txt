@@ -1,0 +1,404 @@
+WAV Whisper 批量识别报告
+生成时间: 2026-09-25 22:23:02 UTC
+文件数量: 44
+
+### debug_1789433857.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 210560
+- duration_sec: 13.16
+- asr_ms: 775
+- text: 啊
+
+### debug_1789433874.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 30400
+- duration_sec: 1.9
+- asr_ms: 637
+- text: 就是跟您打个招呼
+
+### debug_1789433993.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 1359360
+- duration_sec: 84.96
+- asr_ms: 5206
+- text: (我看你)(我看你不懂我)(我看你不懂我)
+
+### debug_1789437491.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 10944
+- duration_sec: 0.684
+- asr_ms: 590
+- text: OK
+
+### debug_1789437563.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 774272
+- duration_sec: 48.392
+- asr_ms: 1000
+- text: 今天天气怎么样今天天气怎么样今天天气怎么样今天天气怎么样
+
+### debug_1789437654.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 28672
+- duration_sec: 1.792
+- asr_ms: 521
+- text: 作个下周出去玩的计划
+
+### debug_1789438130.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 1336000
+- duration_sec: 83.5
+- asr_ms: 3743
+- text: (我看你)(我看你不懂我)(我看你不看你)
+
+### debug_1789439084.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 1192960
+- duration_sec: 74.56
+- asr_ms: 3206
+- text: 来1 21 2
+
+### debug_1789439107.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 29760
+- duration_sec: 1.86
+- asr_ms: 574
+- text: 去央默定要做哪两车
+
+### debug_1789439151.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 55488
+- duration_sec: 3.468
+- asr_ms: 624
+- text: 是在橫冰的陽光台要去陰木丁
+
+### debug_1789439183.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 62272
+- duration_sec: 3.892
+- asr_ms: 561
+- text: 说的是衡兵的阳光台到阳木兵
+
+### debug_1789454101.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 7616
+- duration_sec: 0.476
+- asr_ms: 2005
+- text: (不幸)
+
+### debug_1789454121.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 7744
+- duration_sec: 0.484
+- asr_ms: 510
+- text: (不幸)
+
+### debug_1789454147.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 23680
+- duration_sec: 1.48
+- asr_ms: 506
+- text: 不好不好吃吗
+
+### debug_1789535334.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 15360
+- duration_sec: 0.96
+- asr_ms: 470
+- text: 謝謝
+
+### debug_1789535356.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 56960
+- duration_sec: 3.56
+- asr_ms: 530
+- text: (鸡魚)
+
+### debug_1790151468.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 13760
+- duration_sec: 0.86
+- asr_ms: 613
+- text: ( 音樂)
+
+### debug_1790158102.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 3648
+- duration_sec: 0.228
+- asr_ms: 494
+- text: 謝謝
+
+### debug_1790159016.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 29632
+- duration_sec: 1.852
+- asr_ms: 1245
+- text: (不幸)
+
+### debug_1790159034.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 8831
+- duration_sec: 0.552
+- asr_ms: 498
+- text: 謝謝
+
+### debug_1790159649.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 16320
+- duration_sec: 1.02
+- asr_ms: 1793
+- text: 我可以給你一個貼格的東西
+
+### debug_1790159677.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 16960
+- duration_sec: 1.06
+- asr_ms: 1232
+- text: 謝謝
+
+### debug_1790161890.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 10752
+- duration_sec: 0.672
+- asr_ms: 499
+- text: 謝謝
+
+### debug_1790161906.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 18176
+- duration_sec: 1.136
+- asr_ms: 489
+- text: 戴上了呢
+
+### debug_1790161978.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 29760
+- duration_sec: 1.86
+- asr_ms: 582
+- text: 大力,所以我都会说
+
+### debug_1790162166.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 9536
+- duration_sec: 0.596
+- asr_ms: 484
+- text: 謝謝
+
+### debug_1790162638.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 72000
+- duration_sec: 4.5
+- asr_ms: 1249
+- text: 好
+
+### debug_1790163145.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 8832
+- duration_sec: 0.552
+- asr_ms: 542
+- text: 謝謝
+
+### debug_1790163180.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 16960
+- duration_sec: 1.06
+- asr_ms: 558
+- text: (不幸)
+
+### debug_1790163233.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 51712
+- duration_sec: 3.232
+- asr_ms: 1798
+- text: (大陸: 民主人)
+
+### debug_1790163258.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 23360
+- duration_sec: 1.46
+- asr_ms: 509
+- text: (不幸)
+
+### debug_1790163277.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 12096
+- duration_sec: 0.756
+- asr_ms: 518
+- text: (不幸)
+
+### debug_1790163413.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 13824
+- duration_sec: 0.864
+- asr_ms: 524
+- text: (笑)
+
+### debug_1790163441.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 55360
+- duration_sec: 3.46
+- asr_ms: 1238
+- text: (在那裡有一個人)
+
+### debug_1790163705.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 15296
+- duration_sec: 0.956
+- asr_ms: 535
+- text: 你
+
+### debug_1790163854.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 23296
+- duration_sec: 1.456
+- asr_ms: 572
+- text: (不幸)
+
+### debug_1790164111.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 226816
+- duration_sec: 14.176
+- asr_ms: 1117
+- text: (不幸)
+
+### debug_1790167045.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 177728
+- duration_sec: 11.108
+- asr_ms: 2555
+- text: (不幸)
+
+### debug_1790167283.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 160896
+- duration_sec: 10.056
+- asr_ms: 3040
+- text: 我自己的心情是很好的
+
+### debug_1790167316.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 106560
+- duration_sec: 6.66
+- asr_ms: 1312
+- text: 好,我們來吧!
+
+### debug_1790167366.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 151360
+- duration_sec: 9.46
+- asr_ms: 1216
+- text: 好,好,好,好
+
+### debug_1790167389.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 80960
+- duration_sec: 5.06
+- asr_ms: 585
+- text: 我想天天唱著不
+
+### debug_1790167409.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 44096
+- duration_sec: 2.756
+- asr_ms: 592
+- text: 你手外,本地天安門
+
+### debug_1790167470.wav
+- sample_rate: 16000
+- channels: 1
+- sample_width: 16
+- frames: 15360
+- duration_sec: 0.96
+- asr_ms: 1829
+- text: (不幸)
+
+--- Summary ---
+识别为空: 0
+识别非空: 44
+总耗时: 49.713s

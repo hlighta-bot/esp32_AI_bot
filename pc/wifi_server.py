@@ -102,9 +102,16 @@ import config
 from send_wav import ESP32Player
 
 from voice_pipeline import (
-    pipeline,
+    pipeline_text,
     pcm_to_wav,
+    transcribe,
+    synthesize,
     wav_duration_seconds,
+)
+
+from command_router import (
+    CommandRouter,
+    CommandType,
 )
 
 
@@ -183,6 +190,23 @@ class ClientSession(threading.Thread):
 
         # 当前待发送 PCM
         self._pending_pcm = b""
+
+        # ========================================================
+        # 会话控制层 (P1 + P2)
+        #
+        # CommandRouter 负责 ASR 文本分类：
+        #   WAKE_WORD / INTERRUPT / USER_TEXT
+        #
+        # _wake_activated:
+        #   False = SLEEPING（待唤醒）
+        #   True  = ACTIVE（可对话）
+        #
+        # 本层不依赖任何 LLM。
+        # 切换 LLM Provider 不影响此逻辑。
+        # ========================================================
+
+        self._command_router = CommandRouter()
+        self._wake_activated = False
 
 
     # ========================================================
@@ -660,13 +684,125 @@ class ClientSession(threading.Thread):
 
 
         # ========================================================
-        # ASR + LLM + TTS
+        # 会话控制层 (P1 + P2)
+        #
+        # ASR → CommandRouter.classify() → 事件处理
+        #
+        # ┌─────────────────────────────────────────────────────┐
+        # │ SLEEPING 状态：                                    │
+        # │   WAKE_WORD → 激活，回复确认语（不经过 LLM）        │
+        # │   INTERRUPT → 丢弃（不经过 LLM）                   │
+        # │   USER_TEXT → 丢弃（不经过 LLM）                   │
+        # │                                                    │
+        # │ ACTIVE 状态：                                      │
+        # │   WAKE_WORD → 回复确认语（不经过 LLM）              │
+        # │   INTERRUPT → 不调用 LLM，不发 TTS                  │
+        # │   USER_TEXT → 交给 LLM Router → TTS                 │
+        # └─────────────────────────────────────────────────────┘
+        #
+        # 本层不依赖任何 LLM。
+        # 切换 LLM Provider 不影响此逻辑。
         # ========================================================
 
-        reply_wav = pipeline(
-            wav_bytes,
-            llm_engine=self.llm_engine
+        reply_wav = None
+
+        # --------------------------------------------------------
+        # ASR（Whisper，不依赖 LLM）
+        # --------------------------------------------------------
+
+        user_text = transcribe(wav_bytes)
+
+        if user_text:
+            print(
+                f"{self.log_prefix} "
+                f"[user] {user_text}"
+            )
+
+        # --------------------------------------------------------
+        # CommandRouter 分类（不依赖 LLM）
+        # --------------------------------------------------------
+
+        cmd_type = self._command_router.classify(
+            user_text
         )
+
+        # --------------------------------------------------------
+        # SLEEPING 状态
+        # --------------------------------------------------------
+
+        if not self._wake_activated:
+
+            if cmd_type == CommandType.WAKE_WORD:
+                print(
+                    f"{self.log_prefix} "
+                    f"[wake] activated by '{user_text}'"
+                )
+                self._wake_activated = True
+                reply_wav = synthesize(
+                    config.WAKE_WORD_REPLY
+                )
+
+            else:
+                # INTERRUPT / USER_TEXT / 空 ASR
+                # 全部丢弃，不调用 LLM
+                print(
+                    f"{self.log_prefix} "
+                    f"[wake] sleeping, "
+                    f"cmd={cmd_type.value}, "
+                    f"ignored"
+                )
+
+        # --------------------------------------------------------
+        # ACTIVE 状态
+        # --------------------------------------------------------
+
+        else:
+
+            if cmd_type == CommandType.INTERRUPT:
+                # 打断词：不调用 LLM，不发 TTS
+                #
+                # ESP32 端的能量检测（INTERRUPT_RMS_THRESHOLD）
+                # 已经在播放过程中停止了 TTS。
+                # 这里收到的是打断后的新一轮录音，
+                # ASR 识别出"停"等词，确认用户意图。
+                #
+                # 不发 TTS，让 ESP32 直接进入下一轮录音。
+                print(
+                    f"{self.log_prefix} "
+                    f"[interrupt] '{user_text}', "
+                    f"no TTS"
+                )
+
+            elif cmd_type == CommandType.WAKE_WORD:
+                # 已激活状态下再次说唤醒词
+                # 回复确认语，不经过 LLM
+                print(
+                    f"{self.log_prefix} "
+                    f"[wake] re-activated by "
+                    f"'{user_text}'"
+                )
+                reply_wav = synthesize(
+                    config.WAKE_WORD_REPLY
+                )
+
+            else:
+                # USER_TEXT → 交给 LLM Router
+                #
+                # pipeline_text() 内部：
+                #   LLMRouter.chat(user_text) → synthesize(reply)
+                #
+                # 注意：
+                #   ASR 已经在上面执行过一次（transcribe(wav_bytes)），
+                #   这里使用 pipeline_text() 跳过第二次 ASR，
+                #   实现"一次 ASR → CommandRouter → LLM Router"。
+                #
+                # LLM Router 可以切换：
+                #   Ollama / SenseNova / Gemini / ...
+                # 不影响唤醒/打断逻辑。
+                reply_wav = pipeline_text(
+                    user_text,
+                    llm_engine=self.llm_engine
+                )
 
 
         # ========================================================
@@ -704,10 +840,30 @@ class ClientSession(threading.Thread):
 
         else:
 
+            # ====================================================
+            # 无 TTS 回复（睡眠态丢弃 / 打断词 / ASR 空）
+            #
+            # 关键：
+            #
+            # ESP32 在发送 RPTF 后进入 WAITING_FOR_PLAYBACK
+            # 状态，只有收到 PLAY 才会调用 notifyPlaybackDone()
+            # 解锁，进入下一轮录音。
+            #
+            # 因此这里必须发送一个零长度 PLAY：
+            #
+            #     PLAY | u32 size = 0
+            #
+            # ESP32 的 playPCM(0) 不播放任何内容，
+            # 直接完成并解锁状态机。
+            # ====================================================
+
             print(
                 f"{self.log_prefix} "
-                f"pipeline returned nothing"
+                f"no TTS reply, send empty PLAY "
+                f"to unlock ESP32"
             )
+
+            self._send_empty_play()
 
 
         # ========================================================
@@ -915,6 +1071,67 @@ class ClientSession(threading.Thread):
             print(
                 f"{self.log_prefix} "
                 f"send PLAY socket error: {e}"
+            )
+
+            self.stop_event.set()
+
+            return False
+
+
+    # ========================================================
+    # 零长度 PLAY
+    #
+    # 当没有 TTS 回复时（睡眠态丢弃 / 打断词 / ASR 空），
+    # 发送 PLAY | u32 size = 0 解锁 ESP32 的
+    # WAITING_FOR_PLAYBACK 状态。
+    #
+    # ESP32 的 playPCM(0) 不播放任何内容，
+    # 直接完成并调用 notifyPlaybackDone()。
+    # ========================================================
+
+    def _send_empty_play(self):
+
+        try:
+
+            header = (
+                PROTOCOL_PLAY
+                + struct.pack(
+                    "<I",
+                    0
+                )
+            )
+
+            self.sock.sendall(
+                header
+            )
+
+            print(
+                f"{self.log_prefix} "
+                f"empty PLAY sent "
+                f"(unlock ESP32)"
+            )
+
+            return True
+
+        except (
+            BrokenPipeError,
+            ConnectionResetError
+        ) as e:
+
+            print(
+                f"{self.log_prefix} "
+                f"send empty PLAY failed: {e}"
+            )
+
+            self.stop_event.set()
+
+            return False
+
+        except OSError as e:
+
+            print(
+                f"{self.log_prefix} "
+                f"send empty PLAY socket error: {e}"
             )
 
             self.stop_event.set()

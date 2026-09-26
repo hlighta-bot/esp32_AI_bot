@@ -1,0 +1,35 @@
+Whisper tiny vs base 对照
+Tiny model: /home/hqb/ai-apps/whisper.cpp/models/ggml-tiny.bin
+Base model: /home/hqb/ai-apps/whisper.cpp/models/ggml-base.bin
+
+### debug_1789433993.wav
+- tiny: (我看你)(我看你不懂我)(我看你不懂我)
+- base: (咱们先把这个图片放在这里)(咱们先把这个图片放在这里)(咱们先把这个图片放在这里)(咱们先把这个图片放在这里)
+
+### debug_1789437563.wav
+- tiny: 今天天气怎么样今天天气怎么样今天天气怎么样今天天气怎么样
+- base: 今天天氣怎麼樣今天天氣怎麼樣今天天氣怎麼樣
+
+### debug_1789439107.wav
+- tiny: 去央默定要做哪两车
+- base: 要去燕木丁要做哪一輛車
+
+### debug_1789454147.wav
+- tiny: 不好不好吃吗
+- base: 太好吃了
+
+### debug_1790159649.wav
+- tiny: 我可以給你一個貼格的東西
+- base: (你不想要)
+
+### debug_1790163233.wav
+- tiny: (大陸: 民主人)
+- base: 我把你的臉上線上,我把你的臉上線上向來看來就很適合
+
+### debug_1790167283.wav
+- tiny: 我自己的心情是很好的
+- base: ( 字幕:郭文貴 )
+
+### debug_1790167389.wav
+- tiny: 我想天天唱著不
+- base: 我想听你唱首歌

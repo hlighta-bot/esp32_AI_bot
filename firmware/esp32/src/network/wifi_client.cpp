@@ -12,6 +12,9 @@ WifiClient::WifiClient()
     , _tcpEstablished(false)
     , _mdnsStarted(false)
     , _mutex(nullptr)
+    , _nextWifiRetryMs(0)
+    , _nextTcpRetryMs(0)
+    , _lastTcpProbeMs(0)
 {
     _ssid[0] = '\0';
     _password[0] = '\0';
@@ -125,26 +128,125 @@ void WifiClient::run()
     }
 
 
+    const uint32_t now = millis();
+
+
     /*
      * Wi-Fi itself is disconnected.
+     *
+     * 非阻塞节流：只有到达 _nextWifiRetryMs 才尝试，
+     * 避免每轮 loop 都阻塞在 WiFi.begin()。
      */
     if (WiFi.status() != WL_CONNECTED) {
 
         /*
          * TCP is necessarily invalid when Wi-Fi is gone.
          */
-        _tcpEstablished = false;
+        if (_tcpEstablished) {
+            _tcpEstablished = false;
+            Serial.println("[NET] server disconnected (wifi lost)");
+        }
 
-        tryConnectWifi();
+        if (now >= _nextWifiRetryMs) {
+            tryConnectWifi();
+            _nextWifiRetryMs = now + WIFI_RETRY_INTERVAL_MS;
+        }
 
         return;
     }
 
 
     /*
+     * Wi-Fi 已连接。首次连接时启动 mDNS responder。
+     *
+     * 原来 mDNS 初始化在 tryConnectWifi() 的阻塞等待之后，
+     * 改为非阻塞后 tryConnectWifi() 不再等待连接结果，
+     * 因此 mDNS 启动移到 run() 中，在检测到 WL_CONNECTED
+     * 之后执行。_mdnsStarted 保证只启动一次。
+     */
+    if (!_mdnsStarted)
+    {
+        Serial.println("[NET] wifi connected");
+        Serial.printf("[NET] IP: %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("[NET] RSSI: %d dBm\n", WiFi.RSSI());
+
+        const bool mdnsOk = MDNS.begin("esp32-voice-ai");
+        Serial.printf("[MDNS] begin(\"esp32-voice-ai\") returned: %s\n",
+                      mdnsOk ? "true" : "false");
+
+        if (mdnsOk)
+        {
+            const bool svcOk = MDNS.addService("tcp", "tcp", _pcPort);
+            Serial.printf("[MDNS] addService(tcp/tcp,%u) returned: %s\n",
+                          (unsigned)_pcPort,
+                          svcOk ? "true" : "false");
+            Serial.printf("[MDNS] hostname=esp32-voice-ai.local\n");
+            Serial.printf("[MDNS] localIP=%s\n",
+                          WiFi.localIP().toString().c_str());
+        }
+        else
+        {
+            Serial.println("[MDNS] start failed (resp=0/false)");
+        }
+
+        _mdnsStarted = true;
+    }
+
+    /*
+     * Low-frequency TCP peer-close probe.
+     *
+     * 背景：_tcpEstablished 只会在 Wi-Fi 断开或 read/write
+     * 显式报错时清零。当服务端被干净关闭（例如 python
+     * wifi_server.py Ctrl+C），lwip 会收到 FIN，但如果此时
+     * ESP32 没有业务 I/O（SLEEPING 状态、不录音、不下载），
+     * 上层永远不会察觉，导致 _tcpEstablished 长期为 true，
+     * 即便服务端已经消失。
+     *
+     * 探针策略：在 _tcpEstablished == true 时，每
+     * TCP_PROBE_INTERVAL_MS (5000ms) 调用一次
+     * _client.connected()。该调用内部会做一次
+     * recv(fd, 0, MSG_DONTWAIT)，使 lwip 有机会消化
+     * 已经到达但对应用层尚不可见的 FIN / RST，然后把
+     * 内部 _connected 置为 false。
+     *
+     * 探针本身：
+     *   - 不主动发送任何探测包（不发 keepalive）；
+     *   - 不调用 tryConnectTcp()（避免与"合法上传中短暂
+     *     抖动 → 立即重连"的老问题冲突）；
+     *   - 只负责标记 _tcpEstablished=false 并把
+     *     _nextTcpRetryMs 设置到 3 秒后，让现有的
+     *     retry 分支完成实际的重连工作。
+     */
+    if (_tcpEstablished && (now - _lastTcpProbeMs) >= TCP_PROBE_INTERVAL_MS)
+    {
+        _lastTcpProbeMs = now;
+
+        if (!_client.connected())
+        {
+            _tcpEstablished = false;
+
+            /*
+             * 关闭失效 socket，避免后续 retry 时残留状态。
+             * tryConnectTcp() 里也会再调一次 _client.stop()，
+             * 但这里显式清理，让语义更清晰。
+             */
+            _client.stop();
+
+            Serial.println("[NET] server disconnected");
+            Serial.println("[NET] reconnect in 3s");
+
+            /*
+             * 触发现有 retry 机制。3 秒后同一个 run() 下方
+             * 的 (!_tcpEstablished) 分支会调用 tryConnectTcp()。
+             */
+            _nextTcpRetryMs = now + WIFI_RETRY_INTERVAL_MS;
+        }
+    }
+
+    /*
      * IMPORTANT:
      *
-     * Do NOT call _client.connected() here.
+     * Do NOT call _client.connected() unconditionally here.
      *
      * The previous implementation did this:
      *
@@ -155,10 +257,19 @@ void WifiClient::run()
      * a perfectly valid upload.
      *
      * We now trust our own TCP state and only reconnect when
-     * a real TCP operation fails.
+     * a real TCP operation fails, OR when the low-frequency
+     * probe above (running at most every 5 s) reports that
+     * the peer has closed.
+     *
+     * 非阻塞节流：TCP 连接失败后等 WIFI_RETRY_INTERVAL_MS
+     * 再重试，期间不阻塞 loop()。
      */
     if (!_tcpEstablished) {
-        tryConnectTcp();
+
+        if (now >= _nextTcpRetryMs) {
+            tryConnectTcp();
+            _nextTcpRetryMs = now + WIFI_RETRY_INTERVAL_MS;
+        }
     }
 }
 
@@ -169,117 +280,22 @@ bool WifiClient::tryConnectWifi()
         return true;
     }
 
-
     /*
      * Wi-Fi is not connected, therefore any previous TCP
      * state is invalid.
      */
     _tcpEstablished = false;
 
-
-    Serial.printf(
-        "[wifi] connecting to %s\n",
-        _ssid
-    );
-
-    WiFi.begin(
-        _ssid,
-        _password
-    );
-
-
-    const uint32_t start = millis();
-
-
-    while (
-        WiFi.status() != WL_CONNECTED &&
-        millis() - start < WIFI_CONNECT_TIMEOUT_MS
-    )
-    {
-        delay(100);
-    }
-
-
-    if (WiFi.status() != WL_CONNECTED) {
-
-        Serial.println(
-            "[wifi] connection timeout"
-        );
-
-        return false;
-    }
-
-
-    Serial.println(
-        "[wifi] connected"
-    );
-
-
-    Serial.printf(
-        "[wifi] IP: %s\n",
-        WiFi.localIP().toString().c_str()
-    );
-
-
-    Serial.printf(
-        "[wifi] RSSI: %d dBm\n",
-        WiFi.RSSI()
-    );
-
+    Serial.printf("[NET] wifi connecting to %s\n", _ssid);
 
     /*
-     * Start mDNS responder AFTER Wi-Fi is fully up.
-     *
-     * Why here:
-     *   MDNS.begin() before Wi-Fi connect cannot see multicast
-     *   traffic on 224.0.0.251:5353, so it never answers remote
-     *   mDNS queries (e.g. ESP32-CAM calling queryHost on us).
-     *   Moved out of begin() specifically for this reason.
-     *
-     * Idempotent via _mdnsStarted: subsequent Wi-Fi reconnects
-     * reuse the already-registered responder instead of restarting.
-     *
-     * Loop-time budget:
-     *   playHelloHi() blocks loop() for ~1.87 s. During that
-     *   window the mDNS responder can be slow to answer, but
-     *   ESP32-CAM uses ROBOT_MDNS_TIMEOUT_MS = 500 ms and
-     *   caches the resolved IP for ROBOT_IP_CACHE_MS = 60 s,
-     *   so an occasional missed query is acceptable. Do not
-     *   refactor the audio playback path for this.
+     * 非阻塞：只调用 WiFi.begin() 然后立即返回。
+     * 连接结果由 run() 在后续 loop 中通过 WiFi.status() 检测。
+     * _nextWifiRetryMs 节流防止频繁调用 WiFi.begin()。
      */
-    if (!_mdnsStarted)
-    {
-        // --- mDNS 诊断：打印 begin() 返回值 + 主机名 ---
-        const bool mdnsOk = MDNS.begin("esp32-voice-ai");
-        Serial.printf("[MDNS] begin(\"esp32-voice-ai\") returned: %s\n",
-                      mdnsOk ? "true" : "false");
+    WiFi.begin(_ssid, _password);
 
-        if (mdnsOk)
-        {
-            // addService 也打印返回值，便于排查"注册失败但被吞掉"的情况
-            const bool svcOk = MDNS.addService(
-                "tcp",
-                "tcp",
-                _pcPort
-            );
-            Serial.printf("[MDNS] addService(tcp/tcp,%u) returned: %s\n",
-                          (unsigned)_pcPort,
-                          svcOk ? "true" : "false");
-
-            Serial.printf("[MDNS] hostname=esp32-voice-ai.local\n");
-            Serial.printf("[MDNS] localIP=%s\n",
-                          WiFi.localIP().toString().c_str());
-
-            _mdnsStarted = true;
-        }
-        else
-        {
-            Serial.println("[MDNS] start failed (resp=0/false)");
-        }
-    }
-
-
-    return true;
+    return false;
 }
 
 
@@ -306,11 +322,9 @@ bool WifiClient::tryConnectTcp()
     _client.stop();
 
 
-    Serial.printf(
-        "[tcp] connecting to %s:%u\n",
-        _pcIp.toString().c_str(),
-        _pcPort
-    );
+    Serial.printf("[NET] connecting to server %s:%u\n",
+                  _pcIp.toString().c_str(),
+                  _pcPort);
 
 
     if (!_client.connect(
@@ -318,14 +332,14 @@ bool WifiClient::tryConnectTcp()
             _pcPort,
             WIFI_CONNECT_TIMEOUT_MS))
     {
-        Serial.println(
-            "[tcp] connection failed"
-        );
+        Serial.println("[NET] server connection failed");
 
         _tcpEstablished = false;
 
-        delay(WIFI_RETRY_INTERVAL_MS);
-
+        /*
+         * 不再 delay()。run() 通过 _nextTcpRetryMs 节流，
+         * 3 秒后才会再次尝试，期间 loop() 不阻塞。
+         */
         return false;
     }
 
@@ -348,11 +362,7 @@ bool WifiClient::tryConnectTcp()
      */
     _tcpEstablished = true;
 
-
-    Serial.println(
-        "[tcp] connected"
-    );
-
+    Serial.println("[NET] server connected");
 
     return true;
 }
@@ -388,9 +398,7 @@ void WifiClient::disconnect()
 
     _client.stop();
 
-    Serial.println(
-        "[tcp] disconnected"
-    );
+    Serial.println("[NET] server disconnected");
 }
 
 

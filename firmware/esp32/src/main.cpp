@@ -13,6 +13,7 @@
 
 #include "assets/hi_hello.h"
 
+#include "servo/servo_control.h"
 #include "protocol/frame.h"
 
 
@@ -55,6 +56,26 @@
 #define VAD_RMS_THRESHOLD     400
 #define VAD_MIN_VOICE_MS      200
 #define VAD_SILENCE_MS        700
+
+
+// ============================================================
+// 播放打断检测 (P2)
+//
+// 用户说"停"等词语时，麦克风能量会显著高于喇叭回声。
+// 使用比 VAD 更高的阈值来区分用户语音和回声。
+//
+// 实测依据（同 VAD 注释）：
+//   静默：rms ≈ 50~70 (×2 后 ≈ 100~140)
+//   喇叭回声：rms ≈ 100~500
+//   用户正常说话：rms ≈ 200~900
+//   用户大声说话（如喊"停！"）：rms ≈ 800~2000+
+//
+// 阈值 1200：高于典型回声，低于大声说话。
+// 宽限期 500ms：播放刚开始时喇叭回声最大，跳过检测。
+// ============================================================
+
+#define INTERRUPT_RMS_THRESHOLD   1200
+#define INTERRUPT_GRACE_MS        500
 
 #endif
 
@@ -439,6 +460,90 @@ void playChunk(
 
 
 // ============================================================
+// 播放打断检测 (P2)
+//
+// 在 playPCM() 的 chunk 间隙调用。
+// 轮询麦克风 ADC，读取若干样本计算 RMS。
+// 如果超过 INTERRUPT_RMS_THRESHOLD 且已过宽限期，
+// 返回 true 表示用户正在说话，应停止播放。
+//
+// 注意：此函数不修改 g_mic 的 Ring Buffer 状态
+//       （read 是消费式，但 poll 只填充不消费）。
+//       播放结束后 MicUploader 的 cooldown 会 clear()
+//       所有残留数据，所以这里读取的样本不会影响
+//       下一轮录音。
+// ============================================================
+
+#ifdef FIRMWARE_MODE_WIFI
+
+static bool checkPlaybackInterrupt(uint32_t elapsedMs)
+{
+    // 宽限期内不检测
+    if (elapsedMs < INTERRUPT_GRACE_MS) {
+        return false;
+    }
+
+    // 轮询 ADC，填充 Ring Buffer
+    g_mic.poll();
+
+    // 读取一批样本（最多 256 个 ≈ 16ms@16kHz）
+    static int16_t buf[256];
+    size_t n = g_mic.read(buf, 256);
+
+    if (n == 0) {
+        return false;
+    }
+
+    // 计算 AC RMS
+    int64_t sum = 0;
+    for (size_t i = 0; i < n; i++) {
+        sum += buf[i];
+    }
+    int32_t mean = (int32_t)(sum / (int64_t)n);
+
+    int64_t sqSum = 0;
+    for (size_t i = 0; i < n; i++) {
+        int32_t d = (int32_t)buf[i] - mean;
+        sqSum += (int64_t)d * d;
+    }
+
+    // 整数平方根（二分搜索）
+    int32_t sqAvg = (int32_t)(sqSum / (int64_t)n);
+    if (sqAvg <= 0) {
+        return false;
+    }
+
+    int32_t lo = 0;
+    int32_t hi = sqAvg;
+    if (hi > 46340) {  // sqrt(INT32_MAX) ≈ 46340
+        hi = 46340;
+    }
+    while (lo < hi) {
+        int32_t mid = (lo + hi + 1) / 2;
+        if (mid <= 46340 && (int64_t)mid * mid <= sqAvg) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    int32_t rms = lo;
+
+    if (rms >= INTERRUPT_RMS_THRESHOLD) {
+        Serial.printf(
+            "[play] interrupt detected, rms=%d (threshold=%d)\n",
+            (int)rms,
+            (int)INTERRUPT_RMS_THRESHOLD
+        );
+        return true;
+    }
+
+    return false;
+}
+
+#endif
+
+
+// ============================================================
 // 播放完整 PCM
 //
 // PC：
@@ -470,6 +575,11 @@ void playPCM(
 {
     uint32_t remaining =
         dataSize;
+
+    const uint32_t playStartMs =
+        millis();
+
+    bool interrupted = false;
 
 
     while (remaining > 0)
@@ -537,11 +647,61 @@ void playPCM(
         // ====================================================
 
         sendAck();
+
+
+#ifdef FIRMWARE_MODE_WIFI
+
+        // ====================================================
+        // P2: 播放打断检测
+        //
+        // 每个 chunk 播放后（约 128ms@4096B/16kHz）检查
+        // 麦克风能量。如果检测到用户说话，停止播放。
+        // ====================================================
+
+        if (!interrupted &&
+            checkPlaybackInterrupt(
+                millis() - playStartMs
+            ))
+        {
+            interrupted = true;
+            Serial.println(
+                "[play] user interrupt, stopping playback"
+            );
+        }
+
+#endif
+
     }
 
 
+    // ========================================================
+    // 如果被打断，清空 I2S DMA 缓冲中残留的音频
+    // ========================================================
+
+#ifdef FIRMWARE_MODE_WIFI
+
+    if (interrupted) {
+        // 清空 I2S TX 缓冲，立即停止喇叭输出
+        size_t bytesWritten;
+        uint8_t silence[1024];
+        memset(silence, 0, sizeof(silence));
+        // 写入一小段静音确保 DMA 缓冲排空
+        i2s_write(
+            I2S_PORT,
+            silence,
+            sizeof(silence),
+            &bytesWritten,
+            pdMS_TO_TICKS(100)
+        );
+    }
+
+#endif
+
+
     Serial.println(
-        "[play] PLAY completed"
+        interrupted
+            ? "[play] PLAY interrupted by user"
+            : "[play] PLAY completed"
     );
 }
 
@@ -752,6 +912,14 @@ void setup()
         "I2S initialized."
     );
 
+
+    // ========================================================
+    // 最小舵机自测：
+    // 仅在启动阶段执行一次，用于验证 PWM、方向、中位稳定。
+    // 不影响后续 loop、Wi-Fi、HTTP、robot-event、播放链路。
+    // ========================================================
+
+    servo_run_test_sequence();
 
     Serial.println(
         "READY"

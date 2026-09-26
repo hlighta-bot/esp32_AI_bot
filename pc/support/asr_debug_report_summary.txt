@@ -1,0 +1,49 @@
+ASR 结果分类摘要
+来源: asr_debug_transcripts.txt
+
+likely_normal: 20
+suspicious_generic: 1
+suspicious_long_emptyish: 1
+suspicious_long_lowyield: 5
+suspicious_parenthetical: 17
+
+### suspicious_parenthetical
+- debug_1789433993.wav => (我看你)(我看你不懂我)(我看你不懂我)
+- debug_1789438130.wav => (我看你)(我看你不懂我)(我看你不看你)
+- debug_1789454101.wav => (不幸)
+- debug_1789454121.wav => (不幸)
+- debug_1789535356.wav => (鸡魚)
+- debug_1790151468.wav => ( 音樂)
+- debug_1790159016.wav => (不幸)
+- debug_1790163180.wav => (不幸)
+- debug_1790163233.wav => (大陸: 民主人)
+- debug_1790163258.wav => (不幸)
+- debug_1790163277.wav => (不幸)
+- debug_1790163413.wav => (笑)
+
+### suspicious_long_emptyish
+- debug_1789433857.wav => 啊
+
+### suspicious_generic
+- debug_1790162638.wav => 好
+
+### suspicious_long_lowyield
+- debug_1789437563.wav => 今天天气怎么样今天天气怎么样今天天气怎么样今天天气怎么样
+- debug_1789439084.wav => 来1 21 2
+- debug_1790167283.wav => 我自己的心情是很好的
+- debug_1790167316.wav => 好,我們來吧!
+- debug_1790167366.wav => 好,好,好,好
+
+### likely_normal
+- debug_1789433874.wav => 就是跟您打个招呼
+- debug_1789437491.wav => OK
+- debug_1789437654.wav => 作个下周出去玩的计划
+- debug_1789439107.wav => 去央默定要做哪两车
+- debug_1789439151.wav => 是在橫冰的陽光台要去陰木丁
+- debug_1789439183.wav => 说的是衡兵的阳光台到阳木兵
+- debug_1789454147.wav => 不好不好吃吗
+- debug_1789535334.wav => 謝謝
+- debug_1790158102.wav => 謝謝
+- debug_1790159034.wav => 謝謝
+- debug_1790159649.wav => 我可以給你一個貼格的東西
+- debug_1790159677.wav => 謝謝

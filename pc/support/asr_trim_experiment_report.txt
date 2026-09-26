@@ -1,0 +1,21 @@
+ASR 预处理离线实验报告
+
+### raw
+- floor_rms: 0
+- max_duration_sec: 0.0
+- kept=0/0
+
+### trim_abs220_max6
+- floor_rms: 220
+- max_duration_sec: 6.0
+- kept=0/0
+
+### trim_abs260_max6
+- floor_rms: 260
+- max_duration_sec: 6.0
+- kept=0/0
+
+### trim_abs300_max6
+- floor_rms: 300
+- max_duration_sec: 6.0
+- kept=0/0

@@ -119,6 +119,7 @@ SYSTEM_PROMPT="只用一句话回答。" python voice_chat.py --engine sensenova
 | [`docs/test-2026-09-16-step12-1-cam-base.md`](./docs/test-2026-09-16-step12-1-cam-base.md) | Step 12-1 摄像头基础测试用例（`/`、`/capture`、`/stream`） |
 | [`docs/test-2026-09-19-step12-2-a-person-detect.md`](./docs/test-2026-09-19-step12-2-a-person-detect.md) | Step 12-2-A 本地人物检测测试用例（YCbCr 肤色 + 连通域 + Overlay） |
 | [`docs/MILESTONE_1_VISION_WELCOME.md`](./docs/MILESTONE_1_VISION_WELCOME.md) | **Milestone 1 · 视觉 → 迎宾语音闭环（已验收）**：端到端流程、代码路径、关键技术决策、10 条开发原则、Phase 2-7 计划 |
+| [`docs/barge-in-known-issues.md`](./docs/barge-in-known-issues.md) | **Barge-in / 打断 · 已知问题**（当前可用性不好，本轮不优化）：根因排序、最小现场确认日志、后续任务清单 |
 
 ---
 
@@ -268,20 +269,25 @@ Server 只用 Python 标准库、无 asyncio、阻塞 I/O，可直接迁移到�
 
 保留用于链路验证与烧录日志，不作为长期架构。
 
-### 当前路线速览
+### 当前路线速览（截至 2026-09-26）
 
-* **Milestone 1 · 视觉 → 迎宾语音闭环**（✅ **已验收 2026-09-23**）：CAM 看到人 → raw UDP mDNS → HTTP POST → S3 迎宾。详见 [`docs/MILESTONE_1_VISION_WELCOME.md`](./docs/MILESTONE_1_VISION_WELCOME.md)。
 * **Phase 1 · 目标期主链路**（✅ 已完成 2026-09-09）：Energy VAD + Wi-Fi 双向 + Web 配置基础版
+* **Wake Word「你好」**（✅ 已完成 2026-09-26，实际测试通过）：严格正则匹配，PC 端 `CommandRouter` 分类，SLEEPING/ACTIVE 双态
+* **TCP 断开自动重连**（✅ 已完成 2026-09-26，实际测试通过）：`wifi_client.cpp` 每 5s 低频探针 `_client.connected()`，探测到断开后 3s 自动重连
+* **Audio Pre-Roll 250 ms**（✅ 已完成，解决唤醒词尾字被 VAD 截断的问题）：`mic_uploader.cpp` 中 `preRollRing[4000]` 环形缓冲
+* **Barge-in / 打断**（🟡 **当前可用性不好，暂不优化**，作为后续任务）：
+  * ESP32 端 `checkPlaybackInterrupt()` 每 128ms 才检查一次 + 500ms 宽限期，用户"停"经常无法及时打断
+  * PC 端语义链路（`CommandRouter` → INTERRUPT）本身正确，但依赖 ESP32 端能先停下
+  * 详见 [`docs/barge-in-known-issues.md`](./docs/barge-in-known-issues.md)
+* **Milestone 1 · 视觉 → 迎宾语音闭环**（✅ **已验收 2026-09-23**）：CAM 看到人 → raw UDP mDNS → HTTP POST → S3 迎宾。详见 [`docs/MILESTONE_1_VISION_WELCOME.md`](./docs/MILESTONE_1_VISION_WELCOME.md)
+* **Step 12 视觉支线**（🟡 并行推进）：详见下节
 * **Phase 2 · 舵机控制（Pan/Tilt）**（🔜 计划中）：MG90S 单舵机 PWM → `/robot/event` 增加 `pan`/`tilt` 字段
-* **Phase 3 · 唤醒词（Hi，大聪明）**（🔜 计划中）：VAD + Whisper 匹配，不部署专用 Wake Word 模型
-* **Phase 4 · Audio Pre-Roll**（🔜 计划中）：~300 ms 环形缓冲，解决唤醒词尾字被 VAD 截断
 * **Phase 5 · 麦克风调参**（🔜 计划中）：MAX9814 增益、ADC 削波检测、VAD 阈值、cooldown
 * **Phase 6 · ASR/LLM 错误诊断**（🔜 计划中）：`[ASR]`/`[LLM]`/`[TTS]`/`[PLAY]`/`[WW]` 分层日志
 * **Phase 7 · 多语言**（🔜 计划中）：Whisper 语言自动检测 + TTS 语音路由
-* **Step 12 视觉支线**（🟡 并行推进）：详见下节
 * **Canonical hostname**：`esp32-voice-ai`（mDNS `.local` 解析用）
 
-后续路线与 Architecture Baseline（2026-09-21）见 [`docs/roadmap.md`](./docs/roadmap.md)；Milestone 1 验收归档与 Phase 2-7 详细计划见 [`docs/MILESTONE_1_VISION_WELCOME.md`](./docs/MILESTONE_1_VISION_WELCOME.md)。
+后续路线与 Architecture Baseline（2026-09-21）见 [`docs/roadmap.md`](./docs/roadmap.md)；Milestone 1 验收归档见 [`docs/MILESTONE_1_VISION_WELCOME.md`](./docs/MILESTONE_1_VISION_WELCOME.md)。Barge-in 已知问题与后续任务清单见 [`docs/barge-in-known-issues.md`](./docs/barge-in-known-issues.md)。
 
 ---
 

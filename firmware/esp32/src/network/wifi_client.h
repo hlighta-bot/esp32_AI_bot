@@ -6,7 +6,7 @@
 #endif
 
 #ifndef WIFI_RETRY_INTERVAL_MS
-#define WIFI_RETRY_INTERVAL_MS 2000
+#define WIFI_RETRY_INTERVAL_MS 3000
 #endif
 
 #ifndef WIFI_LOCK_TIMEOUT_MS
@@ -15,6 +15,10 @@
 
 #ifndef TCP_READ_TIMEOUT_MS
 #define TCP_READ_TIMEOUT_MS 100
+#endif
+
+#ifndef TCP_PROBE_INTERVAL_MS
+#define TCP_PROBE_INTERVAL_MS 5000
 #endif
 
 #include <Arduino.h>
@@ -43,6 +47,31 @@ public:
 private:
     bool tryConnectWifi();
     bool tryConnectTcp();
+
+    /*
+     * 非阻塞重连节流。
+     *
+     * Wi-Fi 与 TCP 重试分别记录下次允许尝试的时间，
+     * 避免每轮 loop 都阻塞在 connect() 里。
+     */
+    uint32_t _nextWifiRetryMs;
+    uint32_t _nextTcpRetryMs;
+
+    /*
+     * Timestamp of the last low-frequency TCP probe.
+     *
+     * 探针语义：每 TCP_PROBE_INTERVAL_MS 调用一次
+     * _client.connected()。该调用在 lwip 层触发一次
+     * recv(fd, 0, MSG_DONTWAIT)，让 lwip 有机会处理
+     * 已经到达但对应用层尚不可见的 TCP FIN / RST，
+     * 并据此把 _connected 置为 false。
+     *
+     * 探针本身不发起任何主动探测包，也不直接调用
+     * tryConnectTcp()。它只负责"发现 peer 已关闭 →
+     * 标记 _tcpEstablished=false → 设置 _nextTcpRetryMs
+     * 让现有 retry 机制接管实际重连"。
+     */
+    uint32_t _lastTcpProbeMs;
 
 private:
     char     _ssid[32];
