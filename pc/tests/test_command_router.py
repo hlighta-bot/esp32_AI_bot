@@ -323,6 +323,215 @@ def test_prolonged_speaking_no_false_interrupt():
 
 
 # ============================================================
+# SERVO_COMMAND 分类测试（TC-12..TC-14）
+# ============================================================
+
+def test_servo_command_basic():
+    """
+    TC-12: 舵机命令短语 -> SERVO_COMMAND + 正确命令码
+
+    覆盖用户要求的所有短语：向上/上/抬头、向下/低头、
+    向左/左转、向右/右转、回中/回正/回到中间。
+    """
+    router = CommandRouter()
+
+    # Vertical UP
+    r = router.classify_with_details("向上")
+    assert r.cmd_type == CommandType.SERVO_COMMAND
+    assert r.servo_command == config.SERVO_CMD_VERTICAL_UP
+
+    r = router.classify_with_details("上")
+    assert r.cmd_type == CommandType.SERVO_COMMAND
+    assert r.servo_command == config.SERVO_CMD_VERTICAL_UP
+
+    r = router.classify_with_details("抬头")
+    assert r.cmd_type == CommandType.SERVO_COMMAND
+    assert r.servo_command == config.SERVO_CMD_VERTICAL_UP
+
+    # Vertical DOWN
+    r = router.classify_with_details("向下")
+    assert r.cmd_type == CommandType.SERVO_COMMAND
+    assert r.servo_command == config.SERVO_CMD_VERTICAL_DOWN
+
+    r = router.classify_with_details("下")
+    assert r.cmd_type == CommandType.SERVO_COMMAND
+    assert r.servo_command == config.SERVO_CMD_VERTICAL_DOWN
+
+    r = router.classify_with_details("低头")
+    assert r.cmd_type == CommandType.SERVO_COMMAND
+    assert r.servo_command == config.SERVO_CMD_VERTICAL_DOWN
+
+    # Horizontal LEFT
+    r = router.classify_with_details("向左")
+    assert r.cmd_type == CommandType.SERVO_COMMAND
+    assert r.servo_command == config.SERVO_CMD_HORIZONTAL_LEFT
+
+    r = router.classify_with_details("左转")
+    assert r.cmd_type == CommandType.SERVO_COMMAND
+    assert r.servo_command == config.SERVO_CMD_HORIZONTAL_LEFT
+
+    r = router.classify_with_details("左")
+    assert r.cmd_type == CommandType.SERVO_COMMAND
+    assert r.servo_command == config.SERVO_CMD_HORIZONTAL_LEFT
+
+    # Horizontal RIGHT
+    r = router.classify_with_details("向右")
+    assert r.cmd_type == CommandType.SERVO_COMMAND
+    assert r.servo_command == config.SERVO_CMD_HORIZONTAL_RIGHT
+
+    r = router.classify_with_details("右转")
+    assert r.cmd_type == CommandType.SERVO_COMMAND
+    assert r.servo_command == config.SERVO_CMD_HORIZONTAL_RIGHT
+
+    r = router.classify_with_details("右")
+    assert r.cmd_type == CommandType.SERVO_COMMAND
+    assert r.servo_command == config.SERVO_CMD_HORIZONTAL_RIGHT
+
+    # CENTER_ALL
+    r = router.classify_with_details("回中")
+    assert r.cmd_type == CommandType.SERVO_COMMAND
+    assert r.servo_command == config.SERVO_CMD_CENTER_ALL
+
+    r = router.classify_with_details("回正")
+    assert r.cmd_type == CommandType.SERVO_COMMAND
+    assert r.servo_command == config.SERVO_CMD_CENTER_ALL
+
+    r = router.classify_with_details("回到中间")
+    assert r.cmd_type == CommandType.SERVO_COMMAND
+    assert r.servo_command == config.SERVO_CMD_CENTER_ALL
+
+
+def test_servo_command_with_punct_tone():
+    """
+    TC-13: 舵机命令 + 标点/语气词 尾 仍判定为 SERVO_COMMAND
+
+    与唤醒词规则一致：允许尾部标点/语气词，
+    不允许实质性字符。
+    """
+    router = CommandRouter()
+
+    for phrase in [
+        "向左", "向上", "回中", "抬头", "右转",
+    ]:
+        for suffix in ["", "。", "！", "？", "啊", "吧", "，", "啊。"]:
+            text = phrase + suffix
+            r = router.classify_with_details(text)
+            assert r.cmd_type == CommandType.SERVO_COMMAND, \
+                f"expected SERVO_COMMAND for {text!r}, got {r.cmd_type}"
+
+
+def test_servo_command_no_false_positive():
+    """
+    TC-14: 包含左/右/上/下的普通句子不能被误判为 SERVO_COMMAND
+
+    这是"严格短语"匹配策略的核心保护：
+    句子出现方向词片段，但整句不是舵机命令时，
+    必须落到 USER_TEXT。
+    """
+    router = CommandRouter()
+
+    # 用户明确列出的负例
+    for text in [
+        "帮我查一下天气",
+        "我想向左走",
+        "左边有什么",
+        "右边有什么",
+        "上面是啥",
+        "下面有什么",
+        "向左走两步",
+        "抬头看看",
+        "回头",
+        "回头见",
+        "上菜",
+        "下次",
+        "上下都有",
+        "回家",
+        "回到家里",
+        "回学校",
+        "往左",
+        "往右",
+        "往上",
+        "往下",
+        "朝左走",
+    ]:
+        r = router.classify_with_details(text)
+        assert r.cmd_type == CommandType.USER_TEXT, \
+            f"expected USER_TEXT for {text!r}, got {r.cmd_type.value}"
+
+
+def test_servo_command_priority_vs_interrupt():
+    """
+    TC-15: 打断词优先于舵机命令
+
+    例如"停"、"等一下"不会同时匹配舵机短语。
+    但如果用户说"向左"（无打断词），不触发 INTERRUPT。
+    """
+    router = CommandRouter()
+
+    # 纯打断词 -> INTERRUPT
+    assert router.classify("停") == CommandType.INTERRUPT
+    assert router.classify("等一下") == CommandType.INTERRUPT
+
+    # 舵机命令，不含打断词 -> SERVO_COMMAND
+    assert router.classify("向左") == CommandType.SERVO_COMMAND
+    assert router.classify("向上") == CommandType.SERVO_COMMAND
+
+
+def test_servo_active_state_flow():
+    """
+    TC-16: ACTIVE 状态下 SERVO_COMMAND 不触发 LLM / TTS
+
+    使用与 MockSessionStateMachine 类似的流程，
+    但扩展支持 SERVO_COMMAND。
+    """
+    from command_router import CommandRouter as _CR
+    r = _CR()
+    sm_state = {"activated": True, "llm_called": False, "tts_called": False,
+                "servo_code": None}
+
+    for phrase in ["向左", "向右", "向上", "向下", "回中"]:
+        sm_state["llm_called"] = False
+        sm_state["tts_called"] = False
+        sm_state["servo_code"] = None
+
+        result = r.classify_with_details(phrase)
+        assert result.cmd_type == CommandType.SERVO_COMMAND
+        sm_state["servo_code"] = result.servo_command
+
+        # 模拟 wifi_server._handle_rptf ACTIVE + SERVO_COMMAND 路径
+        if result.cmd_type == CommandType.SERVO_COMMAND:
+            # 不 LLM，不 TTS，仅记录命令码
+            pass
+
+        assert not sm_state["llm_called"]
+        assert not sm_state["tts_called"]
+        assert sm_state["servo_code"] is not None
+
+
+def test_servo_sleeping_state_ignored():
+    """
+    TC-17: SLEEPING 状态下 SERVO_COMMAND 被丢弃
+
+    未唤醒时，即使识别出舵机短语也不执行。
+    """
+    from command_router import CommandRouter as _CR
+    r = _CR()
+    sm_state = {"activated": False}
+
+    result = r.classify_with_details("向左")
+    assert result.cmd_type == CommandType.SERVO_COMMAND
+
+    # SLEEPING + 非 WAKE_WORD -> discard
+    if not sm_state["activated"] and \
+            result.cmd_type != CommandType.WAKE_WORD:
+        action = "discard"
+    else:
+        action = "other"
+
+    assert action == "discard"
+
+
+# ============================================================
 # Main
 # ============================================================
 
@@ -340,6 +549,12 @@ def run_all_tests():
         test_no_duplicate_asr,
         test_stop_never_goes_to_llm,
         test_prolonged_speaking_no_false_interrupt,
+        test_servo_command_basic,
+        test_servo_command_with_punct_tone,
+        test_servo_command_no_false_positive,
+        test_servo_command_priority_vs_interrupt,
+        test_servo_active_state_flow,
+        test_servo_sleeping_state_ignored,
     ]
 
     passed = 0

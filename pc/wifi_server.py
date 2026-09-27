@@ -720,11 +720,16 @@ class ClientSession(threading.Thread):
 
         # --------------------------------------------------------
         # CommandRouter 分类（不依赖 LLM）
+        #
+        # 使用 classify_with_details() 拿到 CommandType 与
+        # SERVO_COMMAND 对应的命令码。
         # --------------------------------------------------------
 
-        cmd_type = self._command_router.classify(
+        cmd_result = self._command_router.classify_with_details(
             user_text
         )
+        cmd_type = cmd_result.cmd_type
+        servo_code = cmd_result.servo_command
 
         # --------------------------------------------------------
         # SLEEPING 状态
@@ -743,7 +748,7 @@ class ClientSession(threading.Thread):
                 )
 
             else:
-                # INTERRUPT / USER_TEXT / 空 ASR
+                # INTERRUPT / USER_TEXT / SERVO_COMMAND / 空 ASR
                 # 全部丢弃，不调用 LLM
                 print(
                     f"{self.log_prefix} "
@@ -772,6 +777,27 @@ class ClientSession(threading.Thread):
                     f"[interrupt] '{user_text}', "
                     f"no TTS"
                 )
+
+            elif cmd_type == CommandType.SERVO_COMMAND:
+                # 舵机命令：不经过 LLM，不发 TTS
+                # 直接发送 SVCO 独立协议帧
+                #
+                # 状态机不变：仍在 ACTIVE。
+                #
+                # 重要：
+                #   ESP32 在 RPTF 后进入 WAITING_FOR_PLAYBACK，
+                #   必须通过 PLAY 解锁。因此发送 SVCO 后
+                #   依然需要空 PLAY 解锁（下方 else 分支处理）。
+                #   但 _send_empty_play 是"无 TTS 路径"，
+                #   此处让 reply_wav 保持 None 触发该路径。
+                print(
+                    f"{self.log_prefix} "
+                    f"[servo] '{user_text}' "
+                    f"cmd=0x{servo_code:02X}"
+                )
+                if not self._send_servo_command(servo_code):
+                    # SVCO 发送失败：仍发送 empty PLAY 解锁
+                    pass
 
             elif cmd_type == CommandType.WAKE_WORD:
                 # 已激活状态下再次说唤醒词
@@ -1083,6 +1109,81 @@ class ClientSession(threading.Thread):
     #
     # 当没有 TTS 回复时（睡眠态丢弃 / 打断词 / ASR 空），
     # 发送 PLAY | u32 size = 0 解锁 ESP32 的
+    # WAITING_FOR_PLAYBACK 状态。
+    #
+    # ESP32 的 playPCM(0) 不播放任何内容，
+    # 直接完成并调用 notifyPlaybackDone()。
+    # ========================================================
+
+    # ========================================================
+    # SVCO - 舵机控制命令
+    #
+    # 帧格式：
+    #   SVCO | u8 command | i16 parameter (little-endian)
+    #
+    # parameter 当前一律传 0（第一版未使用）。
+    #
+    # 注意：
+    #   发送 SVCO 不解锁 ESP32 的 WAITING_FOR_PLAYBACK
+    #   状态；解锁必须由 _send_empty_play 完成。
+    #   调用方在 SVCO 之后仍然会走 empty-PLAY 路径。
+    # ========================================================
+
+    def _send_servo_command(self, command: int) -> bool:
+
+        try:
+
+            frame = (
+                config.PROTOCOL_SERVO
+                + struct.pack(
+                    "<Bh",
+                    command,
+                    0
+                )
+            )
+
+            self.sock.sendall(
+                frame
+            )
+
+            print(
+                f"{self.log_prefix} "
+                f"SVCO sent cmd=0x{command:02X}"
+            )
+
+            return True
+
+        except (
+            BrokenPipeError,
+            ConnectionResetError
+        ) as e:
+
+            print(
+                f"{self.log_prefix} "
+                f"send SVCO failed: {e}"
+            )
+
+            self.stop_event.set()
+
+            return False
+
+        except OSError as e:
+
+            print(
+                f"{self.log_prefix} "
+                f"send SVCO socket error: {e}"
+            )
+
+            self.stop_event.set()
+
+            return False
+
+
+    # ========================================================
+    # 零长度 PLAY
+    #
+    # 当没有 TTS 回复时（睡眠态丢弃 / 打断词 / ASR 空 /
+    # 舵机命令），发送 PLAY | u32 size = 0 解锁 ESP32 的
     # WAITING_FOR_PLAYBACK 状态。
     #
     # ESP32 的 playPCM(0) 不播放任何内容，

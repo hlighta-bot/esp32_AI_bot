@@ -304,6 +304,27 @@ PROTOCOL_REC = b"RECM"
 # RPTF | u32 total_size
 PROTOCOL_RPTF = b"RPTF"
 
+# SVCO: 独立舵机控制协议 (PC → ESP32)
+#   SVCO | u8 command | i16 parameter (little-endian)
+#
+# 与 pc/command_router.py 中的 SERVO_COMMAND 分类配套使用。
+# PC 不保存舵机角度状态；ESP32 端 servo_control 独占保存
+# Pan / Tilt 当前角度并执行步进。
+PROTOCOL_SERVO = b"SVCO"
+
+# SVCO payload 长度：u8 command + i16 parameter
+SERVO_PAYLOAD_LEN = 3
+
+# SVCO command 编码（必须与 firmware/esp32/src/protocol/frame.h
+# 中的 SERVO_CMD_* 保持完全一致）
+SERVO_CMD_VERTICAL_UP         = 0x01
+SERVO_CMD_VERTICAL_DOWN       = 0x02
+SERVO_CMD_HORIZONTAL_LEFT     = 0x11
+SERVO_CMD_HORIZONTAL_RIGHT    = 0x12
+SERVO_CMD_VERTICAL_CENTER     = 0x21
+SERVO_CMD_HORIZONTAL_CENTER   = 0x22
+SERVO_CMD_CENTER_ALL          = 0x2F
+
 # RECM flags 位定义
 REC_FLAG_FIRST = 0x0001      # bit0: 该段录音首包
 REC_FLAG_VAD_TRIGGER = 0x0002  # bit1: VAD 触发点

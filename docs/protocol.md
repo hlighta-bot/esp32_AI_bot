@@ -67,6 +67,7 @@ ESP32 (MAX9814 → VAD → RECM 流 → RPTF)      PC / aidlux (wifi_server.py)
 | `PROTOCOL_ACK`  | `b"ACK"`  | 双向 | 每 chunk 确认 |
 | `PROTOCOL_REC`  | `b"RECM"` | ESP32 → PC | 录音 PCM 分块 |
 | `PROTOCOL_RPTF` | `b"RPTF"` | ESP32 → PC | 本段录音结束 |
+| `PROTOCOL_SERVO` | `b"SVCO"` | PC → ESP32 | 独立舵机控制（Pan/Tilt），非 RPTF 附属 |
 | `PROTOCOL_FINISHED` | `"PLAYBACK_FINISHED"` | ESP32 → PC | 播放完成标记（**当前固件未发送**，PC 端预留检测） |
 
 固件侧常量定义在 [`protocol/frame.h`](../firmware/esp32/src/protocol/frame.h)，
@@ -137,6 +138,45 @@ PC 端在 [`send_wav.py::_wait_playback_finish()`](../pc/send_wav.py) 中通过
 - 单 chunk 上限 `4096` 字节（100 ms @ 16 kHz mono PCM）
 - 单段录音硬上限 `MAX_SESSION_BYTES = 4 MB`（[`wifi_server.py`](../pc/wifi_server.py)）
 - 所有数值字段一律 little-endian
+
+### 4.3 舵机控制（PC → ESP32，SVCO 帧）
+
+`SVCO` 是与 `RPTF` 平级的**独立控制协议**，不依附音频 pipeline。
+PC 在识别到 SERVO_COMMAND 后立即发送，ESP32 在 [`main.cpp::loop()`](../firmware/esp32/src/main.cpp) 的
+`SVCO` 分支直接消费。
+
+```
+┌──────────┬──────────┬───────────────┐
+│  SVCO    │ cmd (u8) │ param (i16)   │
+│  4 字节  │  1 字节  │  2 字节 (LE)  │
+└──────────┴──────────┴───────────────┘
+```
+
+- 载荷总长：`SVCO_PAYLOAD_LEN = 3` 字节（`u8 command` + `i16 parameter` little-endian）
+- 第一版 `parameter` 恒为 `0`；保留给未来的角度/速度参数
+- ESP32 收到后**忽略 parameter**，只按 `command` 分派
+
+**command 枚举**（[`protocol/frame.h`](../firmware/esp32/src/protocol/frame.h) / [`pc/config.py`](../pc/config.py) 双端同步）：
+
+| 常量 | 值 | 语义 | ESP32 端动作 |
+|------|----|------|-------------|
+| `SERVO_CMD_VERTICAL_UP`       | `0x01` | Tilt 向上 | `servo_step_vertical(-10)`（Tilt 硬件方向反向） |
+| `SERVO_CMD_VERTICAL_DOWN`     | `0x02` | Tilt 向下 | `servo_step_vertical(+10)`（Tilt 硬件方向反向） |
+| `SERVO_CMD_HORIZONTAL_LEFT`   | `0x11` | Pan  −10° | `servo_step_horizontal(-10)` |
+| `SERVO_CMD_HORIZONTAL_RIGHT`  | `0x12` | Pan  +10° | `servo_step_horizontal(+10)` |
+| `SERVO_CMD_VERTICAL_CENTER`   | `0x21` | Tilt → 90° | `servo_center_vertical()` |
+| `SERVO_CMD_HORIZONTAL_CENTER` | `0x22` | Pan  → 90° | `servo_center_horizontal()` |
+| `SERVO_CMD_CENTER_ALL`        | `0x2F` | 双轴回中   | `servo_center_all()` |
+
+**状态归属**：PC 端**不保存**当前角度。ESP32 `ServoController` 维护
+`s_verticalAngle` / `s_horizontalAngle`，步进时以 `SERVO_MIN_ANGLE=60` / `SERVO_MAX_ANGLE=120` 硬限幅。
+
+**PC 侧仍发空 PLAY**：即使本次是 SVCO 命令，`wifi_server.py::_handle_rptf()`
+依然继续走后续的空 `PLAY` 头，用于解锁 ESP32 的 `WAITING_FOR_PLAYBACK` 状态，
+避免下一次 RECM 上传被卡住。空 PLAY 不产生 I2S 数据，不触发 Barge-in。
+
+**日志**：ESP32 端每次 SVCO 分派打印 `[servo-cmd] NAME`（NAME = VERTICAL_UP / …）；
+PC 端在 `_send_servo_command()` 打印 `[wifi_server] SVCO cmd=0xNN`。
 
 ---
 
@@ -395,3 +435,4 @@ class TransportInterface(ABC):
 |------|------|------|
 | v1   | 2026-09-08 | 首版，从 README 与源码抽取（USB Serial 单向下行） |
 | v2   | 2026-09-09 | 主链路切换至 Wi-Fi/TCP；新增上行 RECM/RPTF 帧；补充 aidlux 兼容性说明 |
+| v3   | 2026-09-27 | 新增独立 SVCO 帧（PC → ESP32，Pan/Tilt 舵机控制）；见 §4.3 |

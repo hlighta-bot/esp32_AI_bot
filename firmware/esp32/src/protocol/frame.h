@@ -33,6 +33,28 @@ static const uint8_t PROTO_REC[4]  = {'R', 'E', 'C', 'M'};
 static const uint8_t PROTO_RPTF[4] = {'R', 'P', 'T', 'F'};
 static const uint8_t PROTO_ACK[3]  = {'A', 'C', 'K'};
 
+// SVCO: 独立舵机控制协议 (PC → ESP32)
+//   SVCO | u8 command | i16 parameter (little-endian)
+//   command 枚举见 SERVO_CMD_* 定义（与 pc/config.py 保持一致）
+static const uint8_t PROTO_SERVO[4] = {'S', 'V', 'C', 'O'};
+
+// ------------------------------------------------------------
+// SVCO command 编码（PC 与 ESP32 必须保持一致）
+//
+// 载荷: u8 command + i16 parameter (little-endian)
+// 第一版 parameter 保留，当前所有命令均忽略（值为 0）。
+// ------------------------------------------------------------
+
+#define SERVO_CMD_VERTICAL_UP          0x01
+#define SERVO_CMD_VERTICAL_DOWN        0x02
+#define SERVO_CMD_HORIZONTAL_LEFT      0x11
+#define SERVO_CMD_HORIZONTAL_RIGHT     0x12
+#define SERVO_CMD_VERTICAL_CENTER      0x21
+#define SERVO_CMD_HORIZONTAL_CENTER    0x22
+#define SERVO_CMD_CENTER_ALL           0x2F
+
+#define SVCO_PAYLOAD_LEN  3  // u8 cmd + i16 param
+
 // ------------------------------------------------------------
 // RECM flags 位
 // ------------------------------------------------------------

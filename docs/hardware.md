@@ -32,7 +32,8 @@
 |------|------|------|------|------|
 | GPIO0 | BOOT / Config Mode 入口 | 板载按键 | 输入 | strapping pin，长按 3s 进 Config Mode |
 | GPIO1 | MAX9814 Out | 麦克风 | 输入(ADC1_CH0) | `MIC_GPIO`，去直流偏置 |
-| GPIO5 | MG90S 控制信号 | 舵机 | 输出(LEDC PWM) | `SERVO_SIGNAL_GPIO`，50Hz |
+| GPIO4 | MG90S Pan (Horizontal) 控制信号 | 舵机 | 输出(LEDC ch1 PWM) | `SERVO_H_SIGNAL_GPIO`，50Hz，左右 |
+| GPIO5 | MG90S Tilt (Vertical) 控制信号 | 舵机 | 输出(LEDC ch0 PWM) | `SERVO_V_SIGNAL_GPIO`，50Hz，上下 |
 | GPIO15 | I2S DIN | MAX98357A | 输出 | `I2S_DIN`，音频数据 |
 | GPIO16 | I2S BCLK | MAX98357A | 输出 | `I2S_BCLK`，位时钟 |
 | GPIO17 | I2S LRCLK | MAX98357A | 输出 | `I2S_LRC`，左右声道时钟 |
@@ -52,7 +53,9 @@
 LCD ST7735S 需要 5 根信号线：SCL、SDA、RES、DC、CS。
 
 候选范围（避开上表已占用与禁用引脚）：
-- GPIO2、GPIO4、GPIO6、GPIO7、GPIO8、GPIO9、GPIO10~GPIO14、GPIO18、GPIO21、GPIO38~GPIO42
+- GPIO2、GPIO6、GPIO7、GPIO8、GPIO9、GPIO10~GPIO14、GPIO18、GPIO21、GPIO38~GPIO42
+
+> GPIO4 已被 Pan 舵机占用，从候选中移除。
 
 > **注意**：GPIO2 在某些 ESP32-S3 模组上连接板载 LED，需确认是否冲突。
 > 最终分配在 LCD 驱动实现时确定，并回填到上表。
@@ -190,22 +193,31 @@ firmware/esp32/src/display/
 
 1. **舵机电源禁止直接从 ESP32 GPIO 或 3.3V LDO 取电**。
    - 堵转电流可达 1000~1200 mA，会拉垮 ESP32 电源导致复位。
-2. **舵机电源使用独立 5V（或 6V）电源**。
+2. **舵机电源使用独立 5V（或 6V）电源**（双舵机同时堵转时更需独立供电）。
 3. **舵机地线必须与 ESP32 共地**，否则控制信号不稳定。
-4. **控制信号 GPIO**：当前固件使用 `GPIO5`（[`servo_control.h`](../firmware/esp32/src/servo/servo_control.h)）。
+4. **控制信号 GPIO（双舵机）**：
+   - `SERVO_H_SIGNAL_GPIO = 4`（Pan / 左右，LEDC channel 1）
+   - `SERVO_V_SIGNAL_GPIO = 5`（Tilt / 上下，LEDC channel 0）
+   - 定义位置：[`servo_control.h`](../firmware/esp32/src/servo/servo_control.h)
 5. 控制信号线建议串接 220Ω~1kΩ 电阻，抑制瞬态电流。
 
 ### 4.8 固件现状
 
 - 现有模块：[`firmware/esp32/src/servo/servo_control.cpp`](../firmware/esp32/src/servo/servo_control.cpp)
-- 当前参数：
-  - `SERVO_SIGNAL_GPIO = 5`
+- 当前参数（双舵机）：
+  - `SERVO_V_SIGNAL_GPIO = 5`（Tilt / Vertical / 上下）
+  - `SERVO_H_SIGNAL_GPIO = 4`（Pan / Horizontal / 左右）
+  - `SERVO_V_PWM_CHANNEL = 0` / `SERVO_H_PWM_CHANNEL = 1`
   - `SERVO_PWM_FREQ_HZ = 50`
   - `SERVO_PWM_RES_BITS = 13`
   - `SERVO_CENTER_ANGLE = 90`
-  - `SERVO_LEFT_ANGLE = 60`
-  - `SERVO_RIGHT_ANGLE = 120`
+  - `SERVO_MIN_ANGLE = 60` / `SERVO_MAX_ANGLE = 120`
+  - `SERVO_STEP_DEG = 10`
+  - 向后兼容别名：`SERVO_LEFT_ANGLE = SERVO_MIN_ANGLE`，`SERVO_RIGHT_ANGLE = SERVO_MAX_ANGLE`
 - 当前实现使用保守角度范围（60~120°），未使用全 180°。
+- 初始化序列：`servo_init()` → `servo_center_all()`（Pan、Tilt 均回中）→ READY；不再执行自测序列。
+- 状态管理：**PC 端无状态，ESP32 保留 `s_verticalAngle` / `s_horizontalAngle`**。
+- 语音命令映射：见 [`docs/protocol.md`](protocol.md) §4.3 与 [`pc/command_router.py`](../pc/command_router.py)。
 - 后续 MG90S 状态联动阶段再根据规格书扩展角度映射。
 
 ---
@@ -229,3 +241,4 @@ firmware/esp32/src/display/
 | 版本 | 日期 | 变更 |
 |------|------|------|
 | v1 | 2026-09-26 | 新建：整合 LCD ST7735S、MG90S 规格书参数、GPIO 占用表、电源规范 |
+| v2 | 2026-09-27 | 双舵机（Pan=GPIO4/Tilt=GPIO5）；从 LCD 候选中移除 GPIO4；补充 SERVO_H/V_* 常量、Step=10°、初始化回中、状态归属 ESP32 |

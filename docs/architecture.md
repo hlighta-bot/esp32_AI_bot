@@ -103,18 +103,23 @@ ESP32-S3 作为语音 AI 的音频终端（麦克风采集 + 扬声器播放 + �
 |------|------|------|
 | GPIO0 | CONFIG_MODE_BUTTON_GPIO (BOOT 键) | 已定义但当前 disabled（`if (false && ...)`），Config Mode 仅在首次启动（无有效 NVS 配置时）进入 |
 
-### 2.5 舵机（MG90S）
+### 2.5 舵机（MG90S × 2）
+
+| 轴 | 信号 GPIO | LEDC 通道 | 语义 |
+|----|-----------|-----------|------|
+| Pan / Horizontal | GPIO4 | ch1 | 左右 |
+| Tilt / Vertical | GPIO5 | ch0 | 上下 |
 
 | 参数 | 值 |
 |------|-----|
-| 信号 GPIO | GPIO5 |
 | PWM 频率 | 50 Hz |
 | PWM 分辨率 | 13-bit |
 | 中心角 | 90° |
-| 左角 | 60° |
-| 右角 | 120° |
-| 当前用法 | 仅在 `setup()` 中执行一次自测序列 (`servo_run_test_sequence()`)，**loop() 中未使用** |
-| 状态 | 最小验证代码，尚未接入语音控制 |
+| 最小角 / 最大角 | 60° / 120° |
+| 步进 | 10° |
+| 状态归属 | ESP32 内部保存 (`s_verticalAngle` / `s_horizontalAngle`)，PC 端无状态 |
+| 初始化 | `servo_init()` → 双轴回中 → READY；不再执行自测序列 |
+| 语音接入 | 通过独立 SVCO 协议（见 [`docs/protocol.md`](protocol.md) §4.3） |
 
 ---
 
@@ -148,7 +153,7 @@ ESP32-S3 作为语音 AI 的音频终端（麦克风采集 + 扬声器播放 + �
    → g_web.beginHTTP(g_config)         ← STA 模式下启动 WebServer(80)
    → g_robotEvent.begin(g_web.server())  ← 复用同一 WebServer 注册 /robot/event
 6. setupI2S()                          ← 初始化 I2S_NUM_1
-7. servo_run_test_sequence()           ← 仅执行一次
+7. servo_init()                        ← 双舵机 LEDC 初始化 + servo_center_all()
 8. Serial.println("READY")
 ```
 
@@ -169,6 +174,10 @@ ESP32-S3 作为语音 AI 的音频终端（麦克风采集 + 扬声器播放 + �
 10. if (g_wifi.available() < 4): return;   ← 下行门控，避免阻塞
 11. receiveBytes(cmd, 4)
 12. if (PLAY): playPCM(dataSize); g_uploader.notifyPlaybackDone(); return;
+13. if (SVCO): 读 3 字节 payload (u8 cmd + i16 param)
+              → handleServoCommand(cmd)
+              → Serial "[servo-cmd] NAME"
+              → return;
 ```
 
 ### 3.4 模块清单
@@ -182,7 +191,7 @@ ESP32-S3 作为语音 AI 的音频终端（麦克风采集 + 扬声器播放 + �
 | `DeviceConfig` | `config/device_config.{h,cpp}` | NVS 持久化配置，RuntimeConfig 结构体 |
 | `ConfigWeb` | `web/config_web.{h,cpp}` | SoftAP + captive portal + Web 配置页 + STA HTTP |
 | `RobotEventServer` | `web/robot_event_server.{h,cpp}` | 接收 ESP32-CAM HTTP POST `/robot/event`，触发 playHelloHi() |
-| `servo_control` | `servo/servo_control.{h,cpp}` | MG90S 舵机最小控制，仅 setup() 自测 |
+| `servo_control` | `servo/servo_control.{h,cpp}` | 双舵机（Pan/Tilt）LEDC 控制 + 角度状态；由 SVCO 语音命令驱动 |
 | `playHelloHi` | `assets/hi_hello.h` | 内嵌 PCM 资源，迎宾语音"你好！" |
 
 ---
@@ -300,47 +309,58 @@ AudioServer
 
 ```python
 class CommandType(Enum):
-    WAKE_WORD  = "wake_word"
-    INTERRUPT  = "interrupt"
-    USER_TEXT  = "user_text"
+    WAKE_WORD     = "wake_word"
+    INTERRUPT     = "interrupt"
+    SERVO_COMMAND = "servo_command"   # 新增：Pan/Tilt 舵机
+    USER_TEXT     = "user_text"
+
+@dataclass
+class CommandResult:
+    cmd_type: CommandType
+    servo_command: Optional[int] = None   # SERVO_CMD_* 编码
 
 class CommandRouter:
-    def classify(self, text: Optional[str]) -> CommandType:
+    def classify(self, text: Optional[str]) -> CommandType
+    def classify_with_details(self, text: Optional[str]) -> CommandResult
 ```
 
-**分类规则**（包含匹配，无大小写处理）：
+**分类优先级**（严格短语匹配，允许标点/语气词后缀）：
 1. `text` 为 None 或空 → `USER_TEXT`
-2. `WAKE_WORD in text` → `WAKE_WORD`（优先检测）
-3. `any(w in text for w in INTERRUPT_WORDS)` → `INTERRUPT`
-4. 其他 → `USER_TEXT`
+2. 唤醒词（`你好` 等，正则 `^你好(...)$`） → `WAKE_WORD`
+3. 打断词（`停 / 停止 / 别说了 / 闭嘴 / 安静` 等） → `INTERRUPT`
+4. SERVO 短语表（`向上/上/抬头`、`向左/左/左转`、`回中/回正/回到中间` 等，共 16 条） → `SERVO_COMMAND`
+5. 其他 → `USER_TEXT`
 
 **关键约束**：
 - 本模块不依赖任何 LLM
-- 唤醒词检测在打断词之前，避免唤醒词包含打断词时误判
-- 切换 LLM Provider 不影响唤醒/打断逻辑
+- SERVO_COMMAND **不**触发 LLM、**不**触发 TTS、**不**二次 ASR
+- 短语匹配使用正则 `^<phrase>(<punct>|<tail>)*$`，允许尾缀标点/语气词（啊、呀、呢、吧、哦）
+- 短语按长度从长到短排列，避免"向左"被"左"抢先
+- 切换 LLM Provider 不影响唤醒/打断/舵机逻辑
 
 ### 6.2 Session State（`ClientSession._wake_activated`）
 
 | 状态 | `_wake_activated` | 行为 |
 |------|-------------------|------|
-| SLEEPING | `False` | WAKE_WORD → 激活 + 回复确认语；INTERRUPT/USER_TEXT → 丢弃 |
-| ACTIVE | `True` | WAKE_WORD → 回复确认语；INTERRUPT → 无 TTS；USER_TEXT → LLM Router → TTS |
+| SLEEPING | `False` | WAKE_WORD → 激活 + 回复确认语；INTERRUPT/SERVO_COMMAND/USER_TEXT → 丢弃 |
+| ACTIVE | `True` | WAKE_WORD → 回复确认语；INTERRUPT → 无 TTS；SERVO_COMMAND → 发 SVCO；USER_TEXT → LLM Router → TTS |
 
 ### 6.3 _handle_rptf() 事件处理流程
 
 ```
 1. 合并 PCM → pcm_to_wav()
-2. transcribe(wav_bytes)          ← ASR（Whisper.cpp）
-3. CommandRouter.classify(user_text)
+2. transcribe(wav_bytes)                        ← ASR（Whisper.cpp）
+3. CommandRouter.classify_with_details(user_text)
 4. SLEEPING:
    → WAKE_WORD: _wake_activated=True, reply_wav = synthesize(WAKE_WORD_REPLY)
-   → 其他: 丢弃
+   → 其他: 丢弃（SERVO_COMMAND 在 SLEEPING 状态下被忽略）
 5. ACTIVE:
    → INTERRUPT: 无 TTS
+   → SERVO_COMMAND: _send_servo_command(cmd)     ← 发 SVCO；reply_wav 保持 None
    → WAKE_WORD: reply_wav = synthesize(WAKE_WORD_REPLY)
    → USER_TEXT: reply_wav = pipeline_text(user_text)
 6. if reply_wav: _send_reply(reply_wav)
-   else: _send_empty_play()       ← 解锁 ESP32 WAITING_FOR_PLAYBACK
+   else: _send_empty_play()       ← 解锁 ESP32 WAITING_FOR_PLAYBACK（SERVO 也需要这一步）
 7. 清理 _session_pcm = None
 ```
 
@@ -694,11 +714,26 @@ IDLE
 - **原因**：未确认原因。当前 Config Mode 仅在首次启动（无有效 NVS 配置时）自动进入
 - **状态**：BOOT 键长按 3 秒进入 Config Mode 的代码路径完整存在，但被运行时禁用
 
-### 14.5 舵机未接入语音控制
+### 14.5 双舵机语音控制（已实现 · 2026-09-27）
 
-- **现象**：`servo_control` 模块仅在 `setup()` 中执行一次自测序列
-- **状态**：`loop()` 中未调用任何舵机函数
-- **计划**：属于未来功能（Pan/Tilt 视觉联动），当前未实现
+- **架构**：`User voice → Whisper → CommandRouter → SERVO_COMMAND → SVCO → ESP32 → ServoController`
+- **协议**：独立 SVCO 帧（PC → ESP32），**不塞入 RPTF 音频 payload**；详见 [`protocol.md`](protocol.md) §4.3
+- **硬件**：Pan = GPIO4 / LEDC ch1，Tilt = GPIO5 / LEDC ch0，PWM 50 Hz / 13-bit
+- **参数**：Range 60°~120°，Center 90°，Step 10°
+- **状态**：PC 无状态；ESP32 `servo_control.cpp` 维护 `s_verticalAngle` / `s_horizontalAngle`
+- **命令 → 短语**（详见 [`pc/command_router.py`](../pc/command_router.py)）：
+  - VERTICAL_UP：向上 / 上 / 抬头
+  - VERTICAL_DOWN：向下 / 下 / 低头
+  - HORIZONTAL_LEFT：向左 / 左 / 左转
+  - HORIZONTAL_RIGHT：向右 / 右 / 右转
+  - CENTER_ALL：回中 / 回正 / 回到中间
+- **启动**：`servo_init()` → `servo_center_all()` → READY（不再执行机械自测）
+- **测试**：`pc/tests/test_command_router.py` 18/18 PASS；PlatformIO 双 env 编译 SUCCESS
+- **现场验证结论（2026-09-27）**：
+  - ✅ 向上 / 向下：方向已修正（Vertical / Tilt 硬件接线方向与 Pan 相反，`main.cpp::handleServoCommand()` 对 VERTICAL_UP / VERTICAL_DOWN 做反向步进）
+  - ✅ 向左：正常
+  - ⚠️ 向右 / 回中：受 ASR 识别错误影响，未作为舵机硬件故障处理（不修改 ASR）
+- **后续扩展**：与 ESP32-CAM 视觉联动、角度反馈、连续追踪属于未来 Milestone
 
 ### 14.6 LCD 显示
 
@@ -866,7 +901,6 @@ pio run -e esp32-s3-n16r8-wifi
 ### 17.4 不做的功能（当前阶段）
 
 - LCD 显示（未实现）
-- 舵机语音控制（仅自测，未接入语音链路）
 - ESP32 端 LLM（算力不足，未实现）
 - 流式 TTS（Edge TTS 不支持，未实现）
 - WebRTC VAD（当前使用能量 VAD，未替换）
@@ -891,4 +925,5 @@ pio run -e esp32-s3-n16r8-wifi
 | v2 | 2026-09-09 | Phase 1 主链路（Wi-Fi/TCP + MAX9814 + RECM/RPTF + VAD）落地 |
 | v3 | 2026-09-09 | 补充网络配置策略链接 |
 | v4 | 2026-09-23 | 新增 Milestone 1 · 视觉 → 迎宾语音闭环归档 |
+| v5 | 2026-09-27 | 双舵机语音控制（SVCO）：Pan=GPIO4, Tilt=GPIO5, Range 60°~120°, Step 10°；CommandRouter 新增 SERVO_COMMAND 类型 |
 | v5 | 2026-09-26 | 基于实际代码状态全面重写：新增 P0/P1/P2 架构、CommandRouter/Session State、CommandRouter/打断双层设计、Pre-roll 机制、Wi-Fi/TCP 重连细节、错误处理与状态恢复、测试状态、当前折衷、开发规则 |

@@ -762,6 +762,66 @@ void playHelloHi()
 // setup
 // ============================================================
 
+// ============================================================
+// handleServoCommand
+//
+// 解析 SVCO 帧的 3 字节 payload (u8 command + i16 parameter)
+// 并调用对应 servo API。i16 parameter 当前未使用，忽略。
+//
+// 协议：SVCO | u8 cmd | i16 param (little-endian)
+// ============================================================
+
+void handleServoCommand(uint8_t cmd)
+{
+    switch (cmd)
+    {
+        case SERVO_CMD_VERTICAL_UP:
+            Serial.println("[servo-cmd] VERTICAL_UP");
+            // 硬件实测：Vertical (Tilt) 舵机接线方向与 Pan 相反，
+            // 需要反向步进才能让 "向上" 物理向上。Pan 不需要反转。
+            servo_step_vertical(-SERVO_STEP_DEG);
+            break;
+
+        case SERVO_CMD_VERTICAL_DOWN:
+            Serial.println("[servo-cmd] VERTICAL_DOWN");
+            servo_step_vertical(+SERVO_STEP_DEG);
+            break;
+
+        case SERVO_CMD_HORIZONTAL_LEFT:
+            Serial.println("[servo-cmd] HORIZONTAL_LEFT");
+            servo_step_horizontal(-SERVO_STEP_DEG);
+            break;
+
+        case SERVO_CMD_HORIZONTAL_RIGHT:
+            Serial.println("[servo-cmd] HORIZONTAL_RIGHT");
+            servo_step_horizontal(+SERVO_STEP_DEG);
+            break;
+
+        case SERVO_CMD_VERTICAL_CENTER:
+            Serial.println("[servo-cmd] VERTICAL_CENTER");
+            servo_center_vertical();
+            break;
+
+        case SERVO_CMD_HORIZONTAL_CENTER:
+            Serial.println("[servo-cmd] HORIZONTAL_CENTER");
+            servo_center_horizontal();
+            break;
+
+        case SERVO_CMD_CENTER_ALL:
+            Serial.println("[servo-cmd] CENTER_ALL");
+            servo_center_all();
+            break;
+
+        default:
+            Serial.printf(
+                "[servo] invalid command: 0x%02X\n",
+                cmd
+            );
+            break;
+    }
+}
+
+
 void setup()
 {
     Serial.begin(
@@ -914,12 +974,15 @@ void setup()
 
 
     // ========================================================
-    // 最小舵机自测：
-    // 仅在启动阶段执行一次，用于验证 PWM、方向、中位稳定。
-    // 不影响后续 loop、Wi-Fi、HTTP、robot-event、播放链路。
+    // 舵机初始化：
+    //   - 初始化 Pan (GPIO4) + Tilt (GPIO5) 两个舵机
+    //   - 两个舵机都回到中心位（90°）
+    //   - 不执行机械测试序列（正式运行不跑 LEFT/RIGHT/UP/DOWN）
+    //
+    // 详见 servo/servo_control.{h,cpp}
     // ========================================================
 
-    servo_run_test_sequence();
+    servo_init();
 
     Serial.println(
         "READY"
@@ -1197,6 +1260,36 @@ void loop()
 
 #endif
 
+
+        return;
+    }
+
+
+    // ========================================================
+    // SVCO - 独立舵机控制帧
+    //   SVCO | u8 command | i16 parameter (little-endian)
+    //
+    // 与 PLAY 完全解耦，不进入音频链路。
+    // 不调用 notifyPlaybackDone()（不是 PLAY 流程）。
+    // 参数 i16 当前忽略，但为兼容预留。
+    // ========================================================
+
+    if (
+        cmd[0] == PROTO_SERVO[0] &&
+        cmd[1] == PROTO_SERVO[1] &&
+        cmd[2] == PROTO_SERVO[2] &&
+        cmd[3] == PROTO_SERVO[3]
+    )
+    {
+        uint8_t payload[SVCO_PAYLOAD_LEN];
+
+        if (!receiveBytes(payload, SVCO_PAYLOAD_LEN))
+        {
+            Serial.println("[protocol] SVCO payload short");
+            return;
+        }
+
+        handleServoCommand(payload[0]);
 
         return;
     }

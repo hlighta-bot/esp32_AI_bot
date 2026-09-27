@@ -120,6 +120,7 @@ SYSTEM_PROMPT="只用一句话回答。" python voice_chat.py --engine sensenova
 | [`docs/test-2026-09-19-step12-2-a-person-detect.md`](./docs/test-2026-09-19-step12-2-a-person-detect.md) | Step 12-2-A 本地人物检测测试用例（YCbCr 肤色 + 连通域 + Overlay） |
 | [`docs/MILESTONE_1_VISION_WELCOME.md`](./docs/MILESTONE_1_VISION_WELCOME.md) | **Milestone 1 · 视觉 → 迎宾语音闭环（已验收）**：端到端流程、代码路径、关键技术决策、10 条开发原则、Phase 2-7 计划 |
 | [`docs/barge-in-known-issues.md`](./docs/barge-in-known-issues.md) | **Barge-in / 打断 · 已知问题**（当前可用性不好，本轮不优化）：根因排序、最小现场确认日志、后续任务清单 |
+| [`docs/test-2026-09-27-dual-servo-voice.md`](./docs/test-2026-09-27-dual-servo-voice.md) | **双舵机语音控制（SVCO）测试用例**：22 条 TC 覆盖硬件、编译、烧录、SVCO 抓包、语音端到端、边界、状态机、稳定性 |
 
 ---
 
@@ -269,7 +270,7 @@ Server 只用 Python 标准库、无 asyncio、阻塞 I/O，可直接迁移到�
 
 保留用于链路验证与烧录日志，不作为长期架构。
 
-### 当前路线速览（截至 2026-09-26）
+### 当前路线速览（截至 2026-09-27）
 
 * **Phase 1 · 目标期主链路**（✅ 已完成 2026-09-09）：Energy VAD + Wi-Fi 双向 + Web 配置基础版
 * **Wake Word「你好」**（✅ 已完成 2026-09-26，实际测试通过）：严格正则匹配，PC 端 `CommandRouter` 分类，SLEEPING/ACTIVE 双态
@@ -281,7 +282,7 @@ Server 只用 Python 标准库、无 asyncio、阻塞 I/O，可直接迁移到�
   * 详见 [`docs/barge-in-known-issues.md`](./docs/barge-in-known-issues.md)
 * **Milestone 1 · 视觉 → 迎宾语音闭环**（✅ **已验收 2026-09-23**）：CAM 看到人 → raw UDP mDNS → HTTP POST → S3 迎宾。详见 [`docs/MILESTONE_1_VISION_WELCOME.md`](./docs/MILESTONE_1_VISION_WELCOME.md)
 * **Step 12 视觉支线**（🟡 并行推进）：详见下节
-* **Phase 2 · 舵机控制（Pan/Tilt）**（🔜 计划中）：MG90S 单舵机 PWM → `/robot/event` 增加 `pan`/`tilt` 字段
+* **双舵机语音控制（Pan/Tilt · SVCO）**（✅ 已完成 2026-09-27）：独立 `SVCO` 帧；Pan=GPIO4 / Tilt=GPIO5；PC 端 `CommandRouter.SERVO_COMMAND`。现场验证：向上/向下（方向已修正）/ 向左 通过；向右/回中 受 ASR 识别错误影响（不作为舵机硬件故障）。详见 [`docs/test-2026-09-27-dual-servo-voice.md`](./docs/test-2026-09-27-dual-servo-voice.md)
 * **Phase 5 · 麦克风调参**（🔜 计划中）：MAX9814 增益、ADC 削波检测、VAD 阈值、cooldown
 * **Phase 6 · ASR/LLM 错误诊断**（🔜 计划中）：`[ASR]`/`[LLM]`/`[TTS]`/`[PLAY]`/`[WW]` 分层日志
 * **Phase 7 · 多语言**（🔜 计划中）：Whisper 语言自动检测 + TTS 语音路由
