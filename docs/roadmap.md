@@ -372,6 +372,10 @@ PC 扬声器
 
 > **注**：Milestone 1 之后，Phase 2 从"语音质量优化总称"进一步拆分为 Phase 2-7（舵机控制 / 唤醒词 / Audio Pre-Roll / 麦克风调参 / ASR-LLM 诊断 / 多语言），详见 [`MILESTONE_1_VISION_WELCOME.md`](./MILESTONE_1_VISION_WELCOME.md) §6。上表 13-20 保留，作为原始粗粒度阶段划分的历史参考。
 
+**最新完成项（2026-09-27，主线并行 · 独立硬件接入）**：
+- **LCD MVP（ST7735S 160×80）**：非阻塞显示，8 状态 + 5 表情，状态变化才刷新；GPIO 8/9/10/11/12；详见 [`docs/hardware.md`](./hardware.md) §3.4 与 [`docs/architecture.md`](./architecture.md) §14.6。
+- **双舵机语音控制（Pan/Tilt · SVCO）**：详见 [`docs/test-2026-09-27-dual-servo-voice.md`](./test-2026-09-27-dual-servo-voice.md)。
+
 ## 视觉支线 · Step 12（ESP32-CAM，独立设备）
 
 Step 12 是**独立的第二块 ESP32**（ESP32-CAM + OV2640）。**Vision 推理位置是未来架构决策点**（可能在 ESP32-S3、PC 或其他边缘设备），当前未定；ESP32-CAM 只负责通过 Wi-Fi 把画面传出去，**不背 Face Recognition**。
@@ -817,3 +821,89 @@ S12-7 🔜 视觉 + 语音对话闭环
 ```
 
 **目标：一个可以长期电池供电、通过 Wi-Fi 连接 AI、支持语音唤醒并进行连续语音对话的独立 ESP32 Voice AI 设备。**
+
+---
+
+# 61. Cloud AI 前置架构 · Roadmap 存档（2026-09-27，**仅文档存档，本次不实现**）
+
+> 本节约定 Cloud Model Router 之前的**必经架构阶段**，避免后续开发走弯路。
+> 核心原则："**Cloud-first is not the goal. Local filtering first, Cloud intelligence second.**"
+> 完整架构记录见 [`architecture.md`](./architecture.md) §18。
+
+## 61.1 主线 Roadmap 中的位置
+
+```text
+Phase 1 ✅ Wi-Fi 语音主链路（2026-09-09）
+  ↓
+双舵机 SVCO ✅ Pan/Tilt 语音控制（2026-09-27）
+  ↓
+Phase 5 🔜 麦克风调参
+Phase 6 🔜 ASR/LLM 错误诊断
+Phase 7 🔜 多语言
+  ↓
+LCD MVP 🔜（Phase 7 之后，UI 展示）
+  ↓
+【Cloud AI 前置架构阶段】🔜（本节新增，未来必做）
+  ├─ A1 · ESP32 Local Wake Word
+  │       本地识别唤醒词，SLEEPING 不上传音频
+  │       候选技术：ESP-SR / TFLite Micro / Keyword Spotting（本次不选定）
+  ├─ A2 · Local Session / State（当前已隐式具备，正式化）
+  │       SLEEPING / ACTIVE / LISTENING / THINKING / SPEAKING /
+  │       INTERRUPT / SERVO 全部留在本地
+  ├─ A3 · Provider Abstraction
+  │       ASRProvider · LLMProvider · TTSProvider
+  │       先抽出接口，不改变现有实现
+  ├─ A4 · Cloud ASR
+  │       云端 ASR 作为 ASRProvider 的一种实现
+  ├─ A5 · Cloud Model Router
+  │       云端 LLM 路由（Gemini / SenseNova / DeepSeek / Ollama …）
+  │       作为 LLMProvider 的一种云端实现，不是新架构层
+  ├─ A6 · Local / Cloud 模式切换
+  │       Local / Cloud LLM / Cloud Full 三档
+  └─ A7 · Fallback
+          Cloud Provider 失败 → 自动降级到 Local Provider
+          ↓
+长期    🔜 ESP32-CAM Vision Detection → Vision → Servo Tracking
+```
+
+## 61.2 命令路由规则（Cloud AI 前置架构下不变）
+
+| 命令类型 | 路由 | 备注 |
+|----------|------|------|
+| `WAKE_WORD` | 本地 | 永不进 LLM |
+| `INTERRUPT` | 本地 | 永不进 LLM |
+| `SERVO_COMMAND` | 本地（→ SVCO 帧 → 舵机） | 永不进 LLM |
+| `USER_TEXT` | Cloud Model Router（或 Local Provider） | 唯一允许进入 LLM/Cloud 的类别 |
+
+原则：**只有 `USER_TEXT` 走 Model Router；其他类型都是本地控制信号**。
+
+## 61.3 阶段状态区分（截至 2026-09-27）
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| 已完成 | Wake Word PC（正则 + Whisper）、Audio Pre-Roll、Energy VAD、TCP 重连、Voice Pipeline、双舵机 SVCO、CommandRouter、Milestone 1 视觉迎宾 | ✅ |
+| 下一阶段 | LCD MVP | 🔜 |
+| LCD 之后 | ESP32 Local Wake Word、Local Session/Control、Provider Abstraction | 🔜 |
+| 再之后 | Cloud ASR、Cloud Model Router、Local/Cloud 切换、Fallback | 🔜 |
+| 更后面 | ESP32-CAM、Vision Detection、Vision → Servo Tracking | 🔜 |
+
+## 61.4 明确不做（本次，仅文档存档）
+
+- 不开发 Cloud Model Router
+- 不实现 ESP32 Local Wake Word
+- 不修改 ASR / LLMRouter / TTS / Wake Word / CommandRouter / 协议 / TCP / LCD / Servo
+- 不做 Provider Abstraction 的代码重构（仅记录为后续任务）
+
+本次仅**存档**架构决策与后续任务清单，**代码零改动**。
+
+---
+
+## 版本
+
+| 版本 | 日期 | 变更 |
+|------|------|------|
+| v1 | 2026-09-08 | 首版阶段划分 |
+| v2 | 2026-09-21 | Architecture Baseline 冻结 |
+| v3 | 2026-09-23 | Milestone 1 验收归档 |
+| v4 | 2026-09-27 | 双舵机 SVCO 归档 |
+| v5 | 2026-09-27 | 存档 Cloud AI 前置架构（§61）：Local Wake + Session + Provider；Cloud Model Router 明确不是下一步；仅文档，代码零改动 |

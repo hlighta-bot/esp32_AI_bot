@@ -504,6 +504,50 @@ void MicUploader::run()
 
 
     // ========================================================
+    // 诊断日志（LCD 加入后敏感度下降排查用）
+    //
+    // 每 2 s 打印一次：窗口 RMS、窗口 Peak、DC 偏置、VAD RMS。
+    // 用于 A/B 对比 LCD ON vs LCD OFF：
+    //   - 健康静默：peak << 200, dc ≈ 2000~2100
+    //   - 敏感度下降：peak 明显降低 / dc 明显偏移
+    // 日志频率 2 s 一次，不会淹没主循环或影响性能。
+    // ========================================================
+
+    static uint32_t diagLastMs = 0;
+
+    {
+        int32_t peak = 0;
+
+        for (size_t i = 0; i < n; i++) {
+            int32_t v = samples[i];
+            if (v < 0) {
+                v = -v;
+            }
+            if (v > peak) {
+                peak = v;
+            }
+        }
+
+        const uint32_t nowMs = millis();
+
+        if (nowMs - diagLastMs >= 2000) {
+            diagLastMs = nowMs;
+
+            Serial.printf(
+                "[mic_diag] rms=%u peak=%ld dc=%ld "
+                "thresh=%u endThresh=%u state=%d\n",
+                (unsigned)_vad->rms(),
+                (long)peak,
+                (long)_mic->dcState(),
+                (unsigned)_vad->startThreshold(),
+                (unsigned)_vad->endThreshold(),
+                (int)_vad->state()
+            );
+        }
+    }
+
+
+    // ========================================================
     // VAD
     // ========================================================
 
@@ -568,6 +612,7 @@ void MicUploader::run()
             if (!_sessionActive && preRollCount > 0 && uploadCount == 0)
             {
                 size_t offset = 0;
+                bool preRollFailed = false;
 
                 while (offset < preRollCount)
                 {
@@ -606,8 +651,34 @@ void MicUploader::run()
                             chunkSamples *
                             sizeof(int16_t);
                     }
+                    else
+                    {
+                        // TCP 发送失败：当前 RECM session 可能已损坏
+                        // (header 可能已发出, payload 可能只发了一部分)。
+                        // 立即放弃整个 session，不发送 RPTF。
+                        // WiFiClient 将标记连接断开并自动重连，
+                        // 下一次说话建立新的 RECM session。
+                        Serial.println(
+                            "[mic] PRE-ROLL send FAILED, abandoning session"
+                        );
+                        preRollFailed = true;
+                        break;
+                    }
 
                     offset += chunkSamples;
+                }
+
+                if (preRollFailed)
+                {
+                    // 清理 session 状态，回到初始态。
+                    // WiFiClient 后台重连后，下一次 VAD 触发会
+                    // 建立全新的 RECM session。
+                    _sessionActive = false;
+                    uploadCount = 0;
+                    _sessionBytes = 0;
+                    _firstInSession = true;
+                    clearPreRoll();
+                    return;
                 }
 
                 clearPreRoll();
@@ -706,20 +777,28 @@ void MicUploader::run()
                     (unsigned)_sessionBytes
                 );
 
+                uploadCount = 0;
+
             } else {
 
+                // TCP 发送失败：当前 RECM session 可能已损坏
+                // (header 可能已发出, payload 可能只发了一部分)。
+                // 立即放弃整个 session，不发送 RPTF。
+                // WiFiClient 将标记连接断开并自动重连，
+                // 下一次说话建立新的 RECM session。
                 Serial.printf(
-                    "[mic] SEND FAILED samples=%u\n",
+                    "[mic] SEND FAILED samples=%u, abandoning session\n",
                     (unsigned)uploadCount
                 );
+
+                // 清理 session 状态
+                _sessionActive = false;
+                uploadCount = 0;
+                _sessionBytes = 0;
+                _firstInSession = true;
+                clearPreRoll();
+
             }
-
-
-            // ------------------------------------------------
-            // 清空临时 chunk
-            // ------------------------------------------------
-
-            uploadCount = 0;
 
             break;
         }
@@ -793,11 +872,24 @@ void MicUploader::run()
 
                 } else {
 
+                    // TCP 发送失败：当前 RECM session 可能已损坏
+                    // (header 可能已发出, payload 可能只发了一部分)。
+                    // 立即放弃整个 session，不发送 RPTF。
+                    // WiFiClient 将标记连接断开并自动重连，
+                    // 下一次说话建立新的 RECM session。
                     Serial.println(
-                        "[mic] SEND tail FAILED"
+                        "[mic] SEND tail FAILED, abandoning session"
                     );
-                }
 
+                    // 清理 session 状态
+                    _sessionActive = false;
+                    uploadCount = 0;
+                    _sessionBytes = 0;
+                    _firstInSession = true;
+                    clearPreRoll();
+
+                    break;
+                }
 
                 uploadCount = 0;
             }

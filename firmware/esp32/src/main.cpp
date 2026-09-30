@@ -15,6 +15,7 @@
 
 #include "servo/servo_control.h"
 #include "protocol/frame.h"
+#include "display/display.h"
 
 
 #ifdef FIRMWARE_MODE_WIFI
@@ -773,6 +774,9 @@ void playHelloHi()
 
 void handleServoCommand(uint8_t cmd)
 {
+    // LCD: 舵机动作期间显示 SERVO 状态
+    display_set_state(DISPLAY_STATE_SERVO);
+
     switch (cmd)
     {
         case SERVO_CMD_VERTICAL_UP:
@@ -819,6 +823,9 @@ void handleServoCommand(uint8_t cmd)
             );
             break;
     }
+
+    // LCD: 舵机命令处理完，回到 READY
+    display_set_state(DISPLAY_STATE_READY);
 }
 
 
@@ -828,6 +835,9 @@ void setup()
         SERIAL_BAUD
     );
 
+    // LCD 尽早显示 STARTING；display_init 失败也不会阻塞 boot。
+    display_init();
+    display_set_state(DISPLAY_STATE_STARTING);
 
     delay(1000);
 
@@ -871,6 +881,9 @@ void setup()
             cfg.pc_host,
             cfg.pc_port
         );
+
+        // Wi-Fi/TCP 开始运行；是否 connected 由 wifi_client 内部处理
+        display_set_state(DISPLAY_STATE_WIFI);
 
 
         // ========================================================
@@ -987,6 +1000,9 @@ void setup()
     Serial.println(
         "READY"
     );
+
+    // LCD: 稳态准备完成
+    display_set_state(DISPLAY_STATE_READY);
 }
 
 
@@ -1038,6 +1054,12 @@ bool checkConfigModeButton()
 
 void loop()
 {
+
+    // LCD: 非阻塞 pump。
+    // display_set_state() 会节流并排队最新状态，需本函数每次 loop 驱动
+    // 完成实际重绘，避免 pending 状态因后续没有 set_state 调用而滞留。
+    // 未 READY 时 display_pump() 立即返回；无 pending 时也立即返回。
+    display_pump();
 
 #ifdef FIRMWARE_MODE_WIFI
 
@@ -1135,6 +1157,9 @@ void loop()
 
     g_mic.poll();
 
+    // LCD: 麦克风在工作即视为 LISTENING（display_set_state 内部去重）。
+    // 未 READY 的 setup 之后不会走这里，故此处仅在正常语音链路触发。
+    display_set_state(DISPLAY_STATE_LISTENING);
 
     if (!g_wifi.isConnected())
     {
@@ -1171,6 +1196,9 @@ void loop()
     //
     // 否则会阻塞 loop，导致 VAD/录音被饿死。
     // ========================================================
+
+    // LCD: 已把音频送出去，等待 PC 侧 ASR/LLM/TTS 回复 → THINKING
+    display_set_state(DISPLAY_STATE_THINKING);
 
     if (g_wifi.available() < 4)
     {
@@ -1221,6 +1249,8 @@ void loop()
             (unsigned)dataSize
         );
 
+        // LCD: 服务器下发 PLAY，机器人即将说话
+        display_set_state(DISPLAY_STATE_SPEAKING);
 
         // ====================================================
         // 完整接收并播放
@@ -1257,6 +1287,9 @@ void loop()
          */
 
         g_uploader.notifyPlaybackDone();
+
+        // LCD: 播放结束，回到 READY
+        display_set_state(DISPLAY_STATE_READY);
 
 #endif
 

@@ -283,7 +283,9 @@ Server 只用 Python 标准库、无 asyncio、阻塞 I/O，可直接迁移到�
 * **Milestone 1 · 视觉 → 迎宾语音闭环**（✅ **已验收 2026-09-23**）：CAM 看到人 → raw UDP mDNS → HTTP POST → S3 迎宾。详见 [`docs/MILESTONE_1_VISION_WELCOME.md`](./docs/MILESTONE_1_VISION_WELCOME.md)
 * **Step 12 视觉支线**（🟡 并行推进）：详见下节
 * **双舵机语音控制（Pan/Tilt · SVCO）**（✅ 已完成 2026-09-27）：独立 `SVCO` 帧；Pan=GPIO4 / Tilt=GPIO5；PC 端 `CommandRouter.SERVO_COMMAND`。现场验证：向上/向下（方向已修正）/ 向左 通过；向右/回中 受 ASR 识别错误影响（不作为舵机硬件故障）。详见 [`docs/test-2026-09-27-dual-servo-voice.md`](./docs/test-2026-09-27-dual-servo-voice.md)
+* **LCD MVP（ST7735S 160×80）**（✅ 已完成 2026-09-27）：4-line SPI（SCL=14 / SDA=13 / RES=12 / DC=11 / CS=10），20 MHz；8 状态 + 5 表情，非阻塞（`g_displayReady` 保护），状态变化才刷新；不引入动画 / 触摸 / 中文字体。详见 [`docs/hardware.md`](./docs/hardware.md) §3.4 与 [`docs/architecture.md`](./docs/architecture.md) §14.6。
 * **Phase 5 · 麦克风调参**（🔜 计划中）：MAX9814 增益、ADC 削波检测、VAD 阈值、cooldown
+* **Cloud AI 前置架构（Local Wake + Session + Provider）**（🔜 **本次仅存档，未实现** · 2026-09-27）：LCD MVP 之后、Cloud Model Router 之前的必经阶段。核心原则："**Cloud-first is not the goal. Local filtering first, Cloud intelligence second.**" Session / State 必须留在本地；Cloud Model Router **不是**下一步。详见 [`docs/architecture.md`](./docs/architecture.md) §18 与 [`docs/roadmap.md`](./docs/roadmap.md) §61。
 * **Phase 6 · ASR/LLM 错误诊断**（🔜 计划中）：`[ASR]`/`[LLM]`/`[TTS]`/`[PLAY]`/`[WW]` 分层日志
 * **Phase 7 · 多语言**（🔜 计划中）：Whisper 语言自动检测 + TTS 语音路由
 * **Canonical hostname**：`esp32-voice-ai`（mDNS `.local` 解析用）

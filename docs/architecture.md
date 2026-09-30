@@ -735,10 +735,28 @@ IDLE
   - ⚠️ 向右 / 回中：受 ASR 识别错误影响，未作为舵机硬件故障处理（不修改 ASR）
 - **后续扩展**：与 ESP32-CAM 视觉联动、角度反馈、连续追踪属于未来 Milestone
 
-### 14.6 LCD 显示
+### 14.6 LCD 显示（已实现 · 2026-09-27 LCD MVP）
 
-- **状态**：当前代码中无任何 LCD 模块或 OLED 支持
-- **计划**：属于未来功能，当前未实现
+- **状态**：MVP 已接入，非阻塞，仅在状态切换时刷新
+- **硬件**：ST7735S 160×80 IPS LCD，4-line SPI，20 MHz
+- **GPIO**：SCL=14, SDA(MOSI)=13, RES=12, DC=11, CS=10, BLK=3.3V（常亮）
+- **驱动**：`adafruit/Adafruit ST7735 and ST7789 Library@^1.11.0` + `adafruit/Adafruit GFX Library@^1.12`
+- **代码位置**：`firmware/esp32/src/display/display.{h,cpp}`
+- **公开 API**（全部由 `g_displayReady` 保护，未就绪时为 no-op）：
+  - `display_init()`：初始化 SPI + TFT，`initR(INITR_GREENTAB)`（colstart=26, rowstart=1），`setRotation(1)`，`invertDisplay(true)`
+  - `display_clear()`：清屏填黑
+  - `display_show_text(const char* text)`：6×8 ASCII 单行居中
+  - `display_show_face(const char* expression)`：绘制 5 种表情（normal / listening / thinking / speaking / error）
+  - `display_set_state(const char* state)`：8 状态之一，`strcmp` 去重后仅绘制变化内容（表情 + 状态文字）
+- **8 状态**：STARTING / WIFI / READY / LISTENING / THINKING / SPEAKING / SERVO / ERROR
+- **5 表情**：normal（默认） / listening（红点闪烁语义，无动画） / thinking / speaking / error（红框）
+- **刷新策略**：**状态变化才刷新**，同一状态重复调用 `display_set_state()` 通过 `strcmp` 直接 return，不做任何 SPI 写操作
+- **非阻塞保证**：`display_init()` 只在 `setup()` 中调用一次；主循环内所有 `display_set_state()` 均为 O(1) 判断（除状态变化那一次）
+- **集成点**：
+  - `setup()`：`display_init()` → STARTING → WIFI（`g_wifi.begin()` 后） → READY（`servo_init()` 后）
+  - `handleServoCommand()`：入口 SERVO → 结束 READY
+  - `loop()`：mic.poll() 后 LISTENING；downlink 门控处 THINKING；playPCM() 前 SPEAKING；notifyPlaybackDone() 后 READY
+- **限制（MVP 范围内不做）**：动画 / 触摸 / 中文显示 / 状态持久化 / 亮度调节 / 背光 GPIO
 
 ---
 
@@ -915,9 +933,168 @@ pio run -e esp32-s3-n16r8-wifi
 - 网络配置变更 → 更新 `docs/network-config.md`
 - 阶段路线变更 → 更新 `docs/roadmap.md`
 
----
+ ---
 
-## 版本
+ ## 18. Cloud AI 前置架构：Local Wake + Session + Provider（存档 · 2026-09-27，**未实现**）
+
+ > 本节为**架构决策存档**，不是"下一步实现任务"。存档目的：把 Cloud Model Router 之前的必经阶段与原则正式落到文档里，避免后续开发走弯路。
+ > 本次**未开发 Cloud Model Router，未修改任何代码逻辑**。
+
+ ### 18.1 目标架构位置
+
+ 路线位置：**LCD MVP**（下一步） → **ESP32 Local Wake Word** → **Provider Abstraction** → **Cloud ASR** → **Cloud Model Router**。
+
+ 也就是说：**Cloud Model Router 不是下一步**，它排在 Local Wake + Provider 抽象之后。
+
+ ### 18.2 目标架构图（未来形态，非当前代码）
+
+ ```text
+ ┌──────────────────────────────────────────────┐
+ │                    ESP32-S3                   │
+ │  ┌────────────────────────────────────────┐  │
+ │  │          Local Gateway                 │  │
+ │  │  Wi-Fi / TCP / Audio I/O               │  │
+ │  └──────────────────┬─────────────────────┘  │
+ │                     │                        │
+ │  ┌──────────────────▼─────────────────────┐  │
+ │  │            Local Core（本地必留）        │  │
+ │  │  VAD / Local Wake / Session /          │  │
+ │  │  CommandRouter / Interrupt / Servo     │  │
+ │  └──────────────────┬─────────────────────┘  │
+ │                     │                        │
+ │  ┌──────────────────▼─────────────────────┐  │
+ │  │        AI Provider Abstraction         │  │
+ │  │  ASRProvider · LLMProvider · TTSProvider│  │
+ │  │  ├─ Local  实现（Whisper.cpp / Ollama / │  │
+ │  │  │            Edge TTS / ...）          │  │
+ │  │  └─ Cloud  实现（未来 Cloud ASR /      │  │
+ │  │                Cloud Model Router /    │  │
+ │  │                Cloud TTS）              │  │
+ │  └────────────────────────────────────────┘  │
+ └──────────────────────────────────────────────┘
+ ```
+
+ 说明：
+ - **Local Core 必须留在 ESP32 端**。Session / State / Interrupt / Wake / CommandRouter 都不能被 Cloud 替换或绕过。
+ - **AI Provider** 才是"本地 / 云端可切换"的抽象层。
+ - Cloud Model Router 只是 LLMProvider 的一种"云端实现"，不是新的必经架构层。
+
+ ### 18.3 Local Wake Word（未来任务，本次不选定技术）
+
+ 目标：在 ESP32 端本地识别唤醒词（"你好 / Hi"），SLEEPING 状态下不上传音频、不消耗云资源。
+
+ 候选方向（**本次仅列出，不做技术选型**）：
+ - **ESP-SR**（乐鑫官方，模型轻，需评估当前 S3 N16R8 的资源占用）
+ - **TFLite Micro**（自训练小模型，跨平台）
+ - **Keyword Spotting**（Google MLTK 等，训练成本较低）
+ - 已有的 PC 端 Wake Word（正则匹配 + Whisper ASR）**不作为**未来的 ESP32 Local Wake 方案
+
+ 本次存档只记录"要有 Local Wake Word"，**不选定具体技术栈**。
+
+ ### 18.4 Session / State 必须留在本地
+
+ 本地必须持有以下状态，**Cloud 不能接管**：
+
+ ```text
+ SLEEPING · ACTIVE · LISTENING · THINKING · SPEAKING · INTERRUPT · SERVO
+ ```
+
+ 理由：
+ - 会话状态切换是本地时序敏感的（VAD 命中 / 打断 / 播放完成 / 静音超时），云端往返延迟不可控
+ - 断线 / 云不可用时，本地仍能维持最小可用会话（"停"必须能本地生效）
+ - Session 状态与硬件资源（麦克风、扬声器、舵机）紧耦合
+
+ ### 18.5 CommandRouter 的职责边界
+
+ | 命令类型 | 路由 | 说明 |
+ |----------|------|------|
+ | `WAKE_WORD` | 本地 | 唤醒 / 切换 SLEEPING ↔ ACTIVE，**永不进 LLM** |
+ | `INTERRUPT` | 本地 | 停止播放、清空 buffer，**永不进 LLM** |
+ | `SERVO_COMMAND` | 本地（→ SVCO 帧 → 舵机） | 直接下发硬件，**永不进 LLM** |
+ | `USER_TEXT` | 云端 Model Router | 唯一允许进入 LLM/Cloud 的类别 |
+
+ **原则**：只有 `USER_TEXT` 才走 Cloud Model Router。其余三类都是本地控制信号，云端不参与。
+
+ ### 18.6 Provider 抽象
+
+ 未来应引入三层 Provider 抽象（当前代码尚未抽出，Phase 1 是硬编码的 Whisper + LLMRouter + Edge TTS）：
+
+ ```text
+ ASRProvider
+ ├─ WhisperLocal（当前实现，Whisper.cpp）
+ └─ CloudASR（未来，Google / 阿里 / Azure 等）
+
+ LLMProvider
+ ├─ Ollama（当前）
+ ├─ SenseNova（当前）
+ ├─ Gemini（当前）
+ ├─ DeepSeek（未来）
+ └─ CloudModelRouter（未来，**Cloud Model Router 只是 LLMProvider 的一种云端实现**）
+
+ TTSProvider
+ ├─ EdgeTTS（当前）
+ └─ CloudTTS（未来）
+ ```
+
+ 本次**不做** Provider 抽象层的代码重构，仅记录为后续任务。
+
+ ### 18.7 核心原则（**必须记住**）
+
+ > **Cloud-first is not the goal. Local filtering first, Cloud intelligence second.**
+ > （云端优先不是目标。本地过滤优先，云端智能其次。）
+
+ 具体含义：
+ - 唤醒 / 打断 / 舵机这类**本地控制信号**永远留在本地
+ - 只有需要"智能推理"的 `USER_TEXT` 才进入云端
+ - Cloud Model Router 的价值是**路由到正确的云端模型**，不是让一切上云
+
+ ### 18.8 三种运行模式（未来形态）
+
+ | 模式 | 触发 | 数据流 | 成本 |
+ |------|------|--------|------|
+ | **Local** | 用户手动 / 场景选择 | ASR/LLM/TTS 全部走本地 Provider | 最低，断线可用 |
+ | **Cloud LLM** | 默认（当前主形态） | 本地 ASR/TTS + 云端 LLM | 中，只有 LLM 走云 |
+ | **Cloud Full** | 用户手动 | ASR/LLM/TTS 全部走云 | 最高，网络必需 |
+
+ 未来支持在 Local / Cloud LLM / Cloud Full 三种模式之间切换。
+
+ ### 18.9 Fallback 策略（未来）
+
+ 目标策略（**当前未实现**）：
+ - 云端 Provider 失败 / 超时 → 自动降级到 Local Provider
+ - 例如：Cloud Model Router 不可用 → 回落到 Ollama / SenseNova 本地引擎
+ - 例如：Cloud TTS 不可用 → 回落到 Edge TTS
+
+ 本次**不实现** Fallback，仅存档为长期目标。
+
+ ### 18.10 阶段区分（截至 2026-09-27）
+
+ | 阶段 | 内容 | 状态 |
+ |------|------|------|
+ | 已完成 | Wake Word PC（正则 + Whisper）、Audio Pre-Roll、Energy VAD、TCP 重连、Voice Pipeline、双舵机 SVCO、CommandRouter、Milestone 1 视觉迎宾 | ✅ |
+ | 下一阶段 | LCD MVP | 🔜 |
+ | LCD 之后 | ESP32 Local Wake Word、Local Session/Control、Provider Abstraction | 🔜 |
+ | 再之后 | Cloud ASR、Cloud Model Router、Local/Cloud 切换、Fallback | 🔜 |
+ | 更后面 | ESP32-CAM、Vision Detection、Vision → Servo Tracking | 🔜 |
+
+ ### 18.11 本次明确不做
+
+ - 不修改 ESP32 音频逻辑
+ - 不修改 Wake Word 实现（PC 端正则匹配仍保留）
+ - 不修改 CommandRouter
+ - 不修改 LLMRouter（`pc/llm.py`）
+ - 不修改 ASR / TTS
+ - 不接入 Gemini / SenseNova / DeepSeek 之外的新 Provider
+ - 不实现 Cloud Model Router
+ - 不实现 ESP32 Local Wake Word
+ - 不修改 LCD / Servo / TCP / 协议
+ - 不修改 PC 端代码
+
+ 本次仅**存档**架构决策与后续任务清单，代码零改动。
+
+ ---
+
+ ## 版本
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
@@ -926,4 +1103,5 @@ pio run -e esp32-s3-n16r8-wifi
 | v3 | 2026-09-09 | 补充网络配置策略链接 |
 | v4 | 2026-09-23 | 新增 Milestone 1 · 视觉 → 迎宾语音闭环归档 |
 | v5 | 2026-09-27 | 双舵机语音控制（SVCO）：Pan=GPIO4, Tilt=GPIO5, Range 60°~120°, Step 10°；CommandRouter 新增 SERVO_COMMAND 类型 |
+| v6 | 2026-09-27 | 存档 Cloud AI 前置架构（§18）：Local Wake + Session + Provider，核心原则"Local filtering first, Cloud intelligence second"；Cloud Model Router 明确不是下一步；仅文档，代码零改动 |
 | v5 | 2026-09-26 | 基于实际代码状态全面重写：新增 P0/P1/P2 架构、CommandRouter/Session State、CommandRouter/打断双层设计、Pre-roll 机制、Wi-Fi/TCP 重连细节、错误处理与状态恢复、测试状态、当前折衷、开发规则 |

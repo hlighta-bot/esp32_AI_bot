@@ -18,7 +18,7 @@
 | 功放 | MAX98357A | I2S 数字音频功放 | 已验证 |
 | 扬声器 | 3W / 8Ω 或以上 | 音频输出 | 已验证 |
 | 麦克风 | MAX9814 | 模拟 MEMS 麦克风（ADC1） | 已验证 |
-| LCD | 0.96inch IPS Module | 状态显示 / 表情交互 | 待接入 |
+| LCD | 0.96inch IPS Module (ST7735S) | 状态显示 / 表情交互 | 已接入（2026-09-27 LCD MVP） |
 | 舵机 | MG90S（金属齿，9g） | Pan/Tilt 或动作反馈 | 待接入 |
 
 ---
@@ -34,6 +34,11 @@
 | GPIO1 | MAX9814 Out | 麦克风 | 输入(ADC1_CH0) | `MIC_GPIO`，去直流偏置 |
 | GPIO4 | MG90S Pan (Horizontal) 控制信号 | 舵机 | 输出(LEDC ch1 PWM) | `SERVO_H_SIGNAL_GPIO`，50Hz，左右 |
 | GPIO5 | MG90S Tilt (Vertical) 控制信号 | 舵机 | 输出(LEDC ch0 PWM) | `SERVO_V_SIGNAL_GPIO`，50Hz，上下 |
+| GPIO10 | LCD CS | ST7735S | 输出 | `LCD_CS_GPIO`，4-line SPI CS |
+| GPIO11 | LCD DC | ST7735S | 输出 | `LCD_DC_GPIO`，0=Command, 1=Data |
+| GPIO12 | LCD RES | ST7735S | 输出 | `LCD_RST_GPIO`，低电平复位 |
+| GPIO13 | LCD SDA (MOSI) | ST7735S | 输出 | `LCD_MOSI_GPIO`，SPI MOSI |
+| GPIO14 | LCD SCL | ST7735S | 输出 | `LCD_SCLK_GPIO`，SPI SCLK，20 MHz |
 | GPIO15 | I2S DIN | MAX98357A | 输出 | `I2S_DIN`，音频数据 |
 | GPIO16 | I2S BCLK | MAX98357A | 输出 | `I2S_BCLK`，位时钟 |
 | GPIO17 | I2S LRCLK | MAX98357A | 输出 | `I2S_LRC`，左右声道时钟 |
@@ -48,17 +53,22 @@
 - Flash / PSRAM：GPIO34~GPIO37
 - ADC2：Wi-Fi 启用时被占用，只能用 ADC1（GPIO1~GPIO9）
 
-### 2.2 LCD 候选引脚（待分配）
+### 2.2 LCD 引脚分配（已接入 · 2026-09-27）
 
-LCD ST7735S 需要 5 根信号线：SCL、SDA、RES、DC、CS。
+LCD ST7735S 需要 5 根信号线：SCL、SDA、RES、DC、CS。最终分配：
 
-候选范围（避开上表已占用与禁用引脚）：
-- GPIO2、GPIO6、GPIO7、GPIO8、GPIO9、GPIO10~GPIO14、GPIO18、GPIO21、GPIO38~GPIO42
+| LCD 引脚 | GPIO | 备注 |
+|----------|------|------|
+| SCL | GPIO14 | SPI SCLK，20 MHz |
+| SDA | GPIO13 | SPI MOSI |
+| RES | GPIO12 | Reset（低电平） |
+| DC  | GPIO11 | Data/Command |
+| CS  | GPIO10 | Chip Select |
+| BLK | 3.3V   | 常亮，不用 PWM 调光 |
 
-> GPIO4 已被 Pan 舵机占用，从候选中移除。
-
-> **注意**：GPIO2 在某些 ESP32-S3 模组上连接板载 LED，需确认是否冲突。
-> 最终分配在 LCD 驱动实现时确定，并回填到上表。
+> GPIO 8~14 全部空闲（Phase 1 未占用 GPIO 8 及以上）。选定 GPIO10~GPIO14 这 5 个连续 IO，
+> 便于杜邦线成组接线；不与 I2S（GPIO25/26/27）/ 舵机（GPIO4/5）/ USB（GPIO19/20）/ ADC1（GPIO1）冲突。
+> 相对原 GPIO8~12 分配，整体上移 2 位，为未来扩展（如 OLED、SD 卡 SPI 共享等）留出 GPIO8/9 窗口。
 
 ---
 
@@ -100,7 +110,36 @@ LCD ST7735S 需要 5 根信号线：SCL、SDA、RES、DC、CS。
 4. SPI 速率建议先用 20~40 MHz，稳定后再提高。
 5. LCD 模块独立实现于 `firmware/esp32/src/display/`，不把显示代码混入录音/VAD/Wi-Fi。
 
-### 3.4 固件模块规划（待实现）
+#### 3.3.1 3.3V 电源分配（3V3 pin 不够怎么办）
+
+**核心事实**：ESP32-S3 板上所有 `3V3` 引脚在电气上是**同一根电源轨**，均由板载 LDO（通常 AMS1117-3.3 或 AP2112K）供电，额定输出 800 mA ~ 1 A。因此"接哪个 3V3 pin"本质是同一件事，多个设备**并联**到同一 3V3 pin / 同一根 3V3 走线上是正常做法。
+
+**电流预算（本项目）**：
+
+| 设备 | 典型电流 |
+|------|---------|
+| MAX98357A（3W 功放，idle） | 20–80 mA |
+| MAX9814（MEMS 麦克风） | ~5 mA |
+| ST7735S LCD（含背光常亮） | 25–40 mA |
+| ESP32-S3 本体 | 80–150 mA |
+| **合计** | **~130–260 mA** |
+
+LDO 额定 800 mA，余量 > 3×。
+
+**三种可选方案**：
+
+- **方案 A · 并联到已有 3V3 电源轨（推荐）**
+  LCD VCC + BLK 直接并联到 MAX9814 VCC 焊点 / MAX98357A VIN 焊点旁的同一 3V3 走线上，GND 并联。这是最省事的做法，电气上就是所有 3.3V 设备的常规并行供电。
+- **方案 B · 从 5V pin 加一颗 LDO**
+  ESP32-S3 板的 `5V` pin → AP2112K-3.3 / AMS1117-3.3 → LCD VCC / BLK。电流独立，不干扰主 3V3 轨。需要多一颗 LDO 器件。
+- **方案 C · 借 `VDD3P3_OUT`（GPIO19）**
+  ESP32-S3 有专门的 `VDD3P3_OUT`（多数板作为 GPIO19），电气上是 3.3V 电源轨。但**默认避开使用**（避免 GPIO 冲突）；只有在其他方案都不便时才用。
+
+**不推荐做法**：直接把 LCD VCC 接到 USB 5V 或 5V pin（ST7735S 是 3.3V 器件，接 5V 会**烧屏**）。
+
+**本项目采用**：方案 A（LCD VCC / BLK 并联到 MAX9814 的 VCC 焊点）。
+
+### 3.4 固件模块（已实现 · 2026-09-27 LCD MVP）
 
 ```
 firmware/esp32/src/display/
@@ -108,12 +147,20 @@ firmware/esp32/src/display/
 └── display.cpp
 ```
 
-第一阶段接口：
-- `display_init()`
-- `display_clear()`
-- `display_show_text()`
-- `display_show_face()`
-- `display_set_state()`
+依赖：`adafruit/Adafruit GFX Library@^1.12` + `adafruit/Adafruit ST7735 and ST7789 Library@^1.11.0`（见 [`platformio.ini`](../firmware/esp32/platformio.ini)）。
+
+公开 API：
+- `display_init()` — 初始化 SPI 与 ST7735S（`initR(INITR_GREENTAB)`，160×80 tab，20 MHz）
+- `display_clear()` — 清屏
+- `display_show_text(const char*)` — 顶部 ASCII 文本
+- `display_show_face(const char*)` — 5 种表情（normal/listening/thinking/speaking/error）
+- `display_set_state(const char*)` — 8 种状态（STARTING/WIFI/READY/LISTENING/THINKING/SPEAKING/SERVO/ERROR）；相同状态 no-op
+
+关键设计：
+- 未 ready 时所有 API no-op（不阻塞、不 panic、不 while）
+- 状态改变才重绘（`strcmp` 去重）
+- 不暴露 Adafruit_GFX / ST7735 内部类型
+- **Display failure must not block Robot Core**
 
 ---
 
